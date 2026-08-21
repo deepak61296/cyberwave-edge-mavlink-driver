@@ -1,0 +1,11 @@
+services:
+  driver:
+    build: .
+    env_file: .env
+    # Pass through a USB/serial device if needed:
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    volumes:
+      - /tmp/cyberwave-twin.json:/tmp/cyberwave-twin.json
+    environment:
+      CYBERWAVE_TWIN_JSON_FILE: /tmp/cyberwave-twin.json
