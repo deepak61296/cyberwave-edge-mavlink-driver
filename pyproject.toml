@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "MAVLink edge driver for ArduPilot and PX4 aircraft (SITL and real). Speaks the standard Cyberwave drone command contract."
 requires-python = ">=3.11"
 dependencies = [
-    "cyberwave-sdk>=0.1.0",
+    "cyberwave>=0.6.0",
+    "pymavlink>=2.4.40",
 ]
 authors = [
     {name = "Deepak Popli"},
