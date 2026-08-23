@@ -148,6 +148,12 @@ class CyberwaveEdgeMavlinkDriver:
                 continue
             cmd, data = env.get("command"), env.get("data") or {}
             logger.info("executing %s %s", cmd, data or "")
+            # Contract: discrete commands shut down stick input before executing
+            # ("Discrete takeoff, land, RTH, and service commands shut down
+            # Virtual Stick before execution") — otherwise the streamer fights
+            # the mode change for up to 500 ms.
+            with self._cont_lock:
+                self._cont_vec = None
             try:
                 if cmd == "takeoff":
                     ok = self.vehicle.takeoff(float(data.get("altitude", DEFAULT_TAKEOFF_ALT)))
@@ -156,8 +162,6 @@ class CyberwaveEdgeMavlinkDriver:
                 elif cmd == "return_to_home":
                     ok = self.vehicle.return_to_home()
                 elif cmd == "stop":
-                    with self._cont_lock:
-                        self._cont_vec = None
                     self.vehicle.send_velocity_body(0, 0, 0, 0)
                     ok = True
                 elif cmd == "emergency_stop":
