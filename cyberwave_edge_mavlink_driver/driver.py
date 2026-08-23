@@ -98,6 +98,8 @@ class CyberwaveEdgeMavlinkDriver:
         except Exception:
             logger.warning("unparseable command payload: %r", msg)
             return
+        if "status" in env:
+            return  # a driver's command *reply* (ours included), not a command
         src = env.get("source_type")
         if src == "sim_tele" and not self.accept_sim_tele:
             return  # a simulator's job, not ours
@@ -148,21 +150,35 @@ class CyberwaveEdgeMavlinkDriver:
             logger.info("executing %s %s", cmd, data or "")
             try:
                 if cmd == "takeoff":
-                    self.vehicle.takeoff(float(data.get("altitude", DEFAULT_TAKEOFF_ALT)))
+                    ok = self.vehicle.takeoff(float(data.get("altitude", DEFAULT_TAKEOFF_ALT)))
                 elif cmd == "land":
-                    self.vehicle.land()
+                    ok = self.vehicle.land()
                 elif cmd == "return_to_home":
-                    self.vehicle.return_to_home()
+                    ok = self.vehicle.return_to_home()
                 elif cmd == "stop":
                     with self._cont_lock:
                         self._cont_vec = None
                     self.vehicle.send_velocity_body(0, 0, 0, 0)
+                    ok = True
                 elif cmd == "emergency_stop":
                     self.vehicle.emergency_disarm()
+                    ok = True
                 else:
-                    logger.info("command %r not implemented yet", cmd)
+                    logger.info("command %r not implemented", cmd)
+                    ok = False
             except Exception:
                 logger.exception("command %s failed", cmd)
+                ok = False
+            self._reply_status(cmd, ok)
+
+    def _reply_status(self, cmd: Optional[str], ok: bool) -> None:
+        """Answer on the command topic (contract direction "both"). Discrete
+        commands only — acking 10 Hz continuous bursts would flood the topic."""
+        try:
+            self._mq.publish_command_message(
+                self.twin_uuid, {"status": "ok" if ok else "error", "command": cmd})
+        except Exception:
+            logger.warning("could not publish status reply for %s", cmd)
 
     def _streamer_loop(self) -> None:
         zeroed = True
