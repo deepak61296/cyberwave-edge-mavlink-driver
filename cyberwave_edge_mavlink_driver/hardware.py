@@ -39,12 +39,26 @@ class MavlinkVehicle:
     def connect(self, timeout: float = 60.0) -> None:
         logger.info("MAVLink connecting to %s", self.connection_string)
         self.m = mavutil.mavlink_connection(self.connection_string)
-        if self.m.wait_heartbeat(timeout=timeout) is None:
+        hb = self.m.wait_heartbeat(timeout=timeout)
+        if hb is None:
             raise ConnectionError(f"no heartbeat on {self.connection_string}")
-        logger.info("heartbeat: sys=%s comp=%s", self.m.target_system, self.m.target_component)
+        # the whole "one driver, both autopilots" branch, right here:
+        self.autopilot = "px4" if hb.autopilot == mavutil.mavlink.MAV_AUTOPILOT_PX4 \
+            else "ardupilot"
+        logger.info("heartbeat: sys=%s comp=%s autopilot=%s",
+                    self.m.target_system, self.m.target_component, self.autopilot)
         self.m.mav.request_data_stream_send(
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1)
+
+    @property
+    def is_px4(self) -> bool:
+        return getattr(self, "autopilot", "ardupilot") == "px4"
+
+    def set_param(self, name: str, value: float) -> None:
+        self.m.mav.param_set_send(
+            self.m.target_system, self.m.target_component,
+            name.encode(), value, mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
 
     # -- pump (call from ONE thread only) ------------------------------
 
@@ -132,6 +146,11 @@ class MavlinkVehicle:
         return False
 
     def takeoff(self, altitude: float) -> bool:
+        if self.is_px4:
+            return self._takeoff_px4(altitude)
+        return self._takeoff_ardupilot(altitude)
+
+    def _takeoff_ardupilot(self, altitude: float) -> bool:
         if not self.ensure_mode("GUIDED"):
             return False
         if not self.arm():
@@ -148,6 +167,18 @@ class MavlinkVehicle:
         logger.error("NAV_TAKEOFF never accepted")
         return False
 
+    def _takeoff_px4(self, altitude: float) -> bool:
+        """PX4 flow: TAKEOFF mode climbs to MIS_TAKEOFF_ALT, then holds.
+        Set the param first so the requested altitude is honored."""
+        self.set_param("MIS_TAKEOFF_ALT", float(altitude))
+        time.sleep(0.5)
+        if not self.arm():
+            return False
+        if not self.ensure_mode("TAKEOFF", timeout=15):
+            return False
+        logger.info("PX4 auto-takeoff engaged -> %.1f m (MIS_TAKEOFF_ALT)", altitude)
+        return True
+
     def land(self) -> bool:
         return self.ensure_mode("LAND")
 
@@ -162,10 +193,14 @@ class MavlinkVehicle:
         logger.warning("EMERGENCY force-disarm sent")
 
     def send_velocity_body(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
-        """One body-frame velocity setpoint. Callers stream this at ~10 Hz."""
+        """One body-frame velocity setpoint. Callers stream this at ~10 Hz.
+
+        Frame differs by stack: ArduPilot wants BODY_OFFSET_NED; PX4 doesn't
+        implement that one but treats BODY_NED as body-FRD velocity."""
+        frame = mavutil.mavlink.MAV_FRAME_BODY_NED if self.is_px4 \
+            else mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
         self.m.mav.set_position_target_local_ned_send(
-            0, self.m.target_system, self.m.target_component,
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+            0, self.m.target_system, self.m.target_component, frame,
             VEL_MASK, 0, 0, 0, vx, vy, vz, 0, 0, 0, 0, yaw_rate)
 
     def disconnect(self) -> None:

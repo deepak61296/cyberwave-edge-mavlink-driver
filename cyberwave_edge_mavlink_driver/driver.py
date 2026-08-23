@@ -167,17 +167,40 @@ class CyberwaveEdgeMavlinkDriver:
 
     def _streamer_loop(self) -> None:
         zeroed = True
+        primed = 0
+        last_mode_req = 0.0
         while not self._stop.is_set():
             with self._cont_lock:
                 vec, at = self._cont_vec, self._cont_at
-            if vec is not None and time.time() - at < CONTINUOUS_TIMEOUT_S:
+            fresh = vec is not None and time.time() - at < CONTINUOUS_TIMEOUT_S
+            if fresh:
                 self.vehicle.send_velocity_body(*vec)
                 zeroed = False
+                # PX4: OFFBOARD refuses to engage until setpoints are already
+                # flowing — prime a few, then request the mode until it sticks.
+                if self.vehicle.is_px4 and not self._in_offboard():
+                    primed += 1
+                    if primed >= 3 and time.time() - last_mode_req > 1.0:
+                        self.vehicle.m.set_mode("OFFBOARD")
+                        last_mode_req = time.time()
+                else:
+                    primed = 0
             elif not zeroed:
                 self.vehicle.send_velocity_body(0, 0, 0, 0)  # dead-man brake
                 logger.info("continuous command expired — sticks zeroed")
                 zeroed = True
+            elif self.vehicle.is_px4 and self._in_offboard():
+                # dropping the stream would trip PX4's offboard failsafe —
+                # keep zero-velocity setpoints flowing (= position hold)
+                # until a discrete command switches the mode.
+                self.vehicle.send_velocity_body(0, 0, 0, 0)
             time.sleep(0.1)
+
+    def _in_offboard(self) -> bool:
+        try:
+            return self.vehicle.state["mode"] == self.vehicle.m.mode_mapping()["OFFBOARD"]
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Lifecycle
