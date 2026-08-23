@@ -86,11 +86,10 @@ class CyberwaveEdgeMavlinkDriver:
     # ------------------------------------------------------------------
 
     def _subscribe_commands(self) -> None:
-        topic = f"cyberwave/twin/{self.twin_uuid}/command"
-        # NOTE: no public command-subscribe helper in SDK v0.6.5 — using the
-        # inner client, as proven live in probe_flight.py. SDK PR candidate.
-        self._mq._client.subscribe(topic, self._on_command)
-        logger.info("subscribed to %s", topic)
+        # Public SDK helper — subscribes to cyberwave/twin/{uuid}/command
+        # (with the client's topic prefix applied, matching the backend).
+        self._mq.subscribe_command_message(self.twin_uuid, self._on_command)
+        logger.info("subscribed to command topic for twin %s", self.twin_uuid)
 
     def _on_command(self, msg: Any) -> None:
         """paho thread: validate + enqueue, never block."""
