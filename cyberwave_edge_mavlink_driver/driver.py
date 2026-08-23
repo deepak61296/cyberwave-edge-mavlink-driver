@@ -72,7 +72,16 @@ class CyberwaveEdgeMavlinkDriver:
         # a driver pointed at real hardware must never fly simulator traffic.
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
 
-        conn = connection or os.environ.get("MAVLINK_CONNECTION", "tcp:127.0.0.1:5760")
+        # Scaffold pattern: when Edge Core launches the driver, per-device
+        # runtime config arrives via metadata.edge_configs in the twin JSON.
+        # Env var wins for standalone/dev runs.
+        self.edge_configs: dict[str, Any] = self._load_edge_configs()
+        conn = (
+            connection
+            or os.environ.get("MAVLINK_CONNECTION")
+            or self.edge_configs.get("mavlink_connection")
+            or "tcp:127.0.0.1:5760"
+        )
         self.vehicle = MavlinkVehicle(conn)
 
         self._cmd_queue: "queue.Queue[dict]" = queue.Queue()
@@ -83,6 +92,19 @@ class CyberwaveEdgeMavlinkDriver:
 
         self._cw = Cyberwave()
         self._mq = self._cw.mqtt
+
+    def _load_edge_configs(self) -> dict[str, Any]:
+        if not self.twin_json_file:
+            return {}
+        try:
+            meta = json.loads(self.twin_json_file.read_text()).get("metadata") or {}
+            configs = meta.get("edge_configs") or {}
+            if configs:
+                logger.info("edge_configs: %s", configs)
+            return configs
+        except Exception:
+            logger.exception("could not read twin JSON at %s", self.twin_json_file)
+            return {}
 
     # ------------------------------------------------------------------
     # MQTT side
