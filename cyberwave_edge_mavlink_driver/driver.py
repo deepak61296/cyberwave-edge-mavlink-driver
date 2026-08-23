@@ -67,7 +67,10 @@ class CyberwaveEdgeMavlinkDriver:
         self.api_key = api_key
         self.twin_json_file = Path(twin_json_file) if twin_json_file else None
         self.child_uuids = child_uuids or []
-        self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "1") != "0"
+        # Contract: "Only source_type tele is executed on the aircraft."
+        # sim_tele is opt-in for SITL rigs (CYBERWAVE_ACCEPT_SIM_TELE=1);
+        # a driver pointed at real hardware must never fly simulator traffic.
+        self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
 
         conn = connection or os.environ.get("MAVLINK_CONNECTION", "tcp:127.0.0.1:5760")
         self.vehicle = MavlinkVehicle(conn)

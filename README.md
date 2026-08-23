@@ -40,7 +40,11 @@ Contract behaviors honored:
 - **Dead-man**: continuous commands must refresh within **500 ms** or the
   driver zeroes the sticks (mirrors the DJI driver and PX4 offboard).
 - **`source_type` policy**: `tele` always executes; `sim_tele` only when
-  `CYBERWAVE_ACCEPT_SIM_TELE=1` (default on, for SITL development).
+  `CYBERWAVE_ACCEPT_SIM_TELE=1` (default **off**, per the contract: "Only
+  source_type tele is executed on the aircraft" — export it for SITL rigs).
+  `edit`, `edge`, and untagged envelopes are dropped: stricter than the SDK's
+  generic listener policy (which accepts `edit` and untagged), a deliberate
+  choice for a flying vehicle.
 - Magnitudes ride in `data.linear_x` / `data.angular_z`; direction comes
   from the command name.
 
