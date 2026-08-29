@@ -1,0 +1,19 @@
+[Unit]
+Description=Cyberwave MAVLink edge driver (ArduPilot/PX4)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust user + paths to the Pi's layout before installing.
+User=pi
+WorkingDirectory=/home/pi/cyberwave-edge-mavlink-driver
+EnvironmentFile=/etc/cyberwave-mavlink-driver.env
+ExecStart=/home/pi/cyberwave-edge-mavlink-driver/.venv/bin/python -u -m cyberwave_edge_mavlink_driver.main
+# Driver exits non-zero on fatal errors by design — systemd restarts it,
+# same contract as Edge Core.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
