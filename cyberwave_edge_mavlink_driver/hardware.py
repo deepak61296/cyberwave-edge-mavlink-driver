@@ -39,8 +39,16 @@ class MavlinkVehicle:
     def connect(self, timeout: float = 60.0) -> None:
         logger.info("MAVLink connecting to %s", self.connection_string)
         self.m = mavutil.mavlink_connection(self.connection_string)
-        if self.m.wait_heartbeat(timeout=timeout) is None:
-            raise ConnectionError(f"no heartbeat on {self.connection_string}")
+        # Behind mavlink-router the first heartbeat can carry sysid 0
+        # (seen on the Pi, 2026-08-30); accepting it would turn every
+        # command into a broadcast. Wait for a real system id.
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.m.wait_heartbeat(timeout=5) is not None \
+                    and self.m.target_system != 0:
+                break
+        if self.m.target_system == 0:
+            raise ConnectionError(f"no usable heartbeat on {self.connection_string}")
         logger.info("heartbeat: sys=%s comp=%s", self.m.target_system, self.m.target_component)
         self.m.mav.request_data_stream_send(
             self.m.target_system, self.m.target_component,

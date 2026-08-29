@@ -227,14 +227,23 @@ class CyberwaveEdgeMavlinkDriver:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        self.vehicle.connect()
+    def _mqtt_up(self) -> bool:
+        return bool(getattr(self._mq, "connected", False))
+
+    def _connect_mqtt(self) -> None:
+        """Connect + subscribe, tolerating failure — run() retries us.
+        (A DNS blip at boot on the Pi, 2026-08-30, proved a single
+        attempt is not enough on an edge box.)"""
         try:
             self._mq.connect()
+            time.sleep(1.0)
+            self._subscribe_commands()
         except Exception:
-            pass
-        time.sleep(1.0)
-        self._subscribe_commands()
+            logger.warning("MQTT connect failed — will retry")
+
+    def run(self) -> None:
+        self.vehicle.connect()
+        self._connect_mqtt()
         logger.info("driver up: twin=%s aircraft=%s accept_sim_tele=%s",
                     self.twin_uuid, self.vehicle.connection_string, self.accept_sim_tele)
 
@@ -248,6 +257,9 @@ class CyberwaveEdgeMavlinkDriver:
         try:
             while True:
                 time.sleep(10)
+                if not self._mqtt_up():
+                    logger.warning("MQTT down — reconnecting")
+                    self._connect_mqtt()
                 s = self.vehicle.state
                 logger.info("hb: armed=%s alt=%.2f mode=%s",
                             s["armed"], s["alt"], s["mode"])
