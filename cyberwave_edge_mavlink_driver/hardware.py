@@ -32,6 +32,7 @@ class MavlinkVehicle:
         self.state: dict[str, Any] = {
             "armed": False, "mode": None, "alt": 0.0,
             "ned": None, "attitude": None, "acks": {}, "last_heartbeat": 0.0,
+            "servo_pwm": None,
         }
 
     # -- connection ----------------------------------------------------
@@ -75,6 +76,9 @@ class MavlinkVehicle:
             s["ned"] = (msg.x, msg.y, msg.z)
         elif k == "ATTITUDE":
             s["attitude"] = (msg.roll, msg.pitch, msg.yaw)
+        elif k == "SERVO_OUTPUT_RAW":
+            s["servo_pwm"] = (msg.servo1_raw, msg.servo2_raw,
+                              msg.servo3_raw, msg.servo4_raw)
         elif k == "STATUSTEXT":
             logger.info("[fc] %s", msg.text)
         return k

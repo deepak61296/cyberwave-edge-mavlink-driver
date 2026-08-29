@@ -20,6 +20,7 @@ Command vocabulary implemented (subset of dji/mini-4-pro contract v1):
 
 import json
 import logging
+import math
 import os
 import queue
 import threading
@@ -38,6 +39,13 @@ TELEMETRY_HZ = 10.0
 DEFAULT_SPEED = 1.0          # m/s for continuous locomotion
 DEFAULT_YAW_RATE = 0.5       # rad/s for turns
 DEFAULT_TAKEOFF_ALT = 2.0
+
+# Prop-joint animation (twin assets with prop_N_joint continuous joints).
+# The viewer renders joint POSITIONS only, so we integrate a PWM-scaled
+# visual spin rate into wrapped angles — legible spin, not true prop RPM.
+PROP_JOINTS = ("prop_1_joint", "prop_2_joint", "prop_3_joint", "prop_4_joint")
+PROP_DIRS = (1, -1, 1, -1)          # alternating CW/CCW, quad convention
+PROP_VISUAL_MAX_RAD_S = 20.0
 
 # command -> body-frame (vx, vy, vz, yaw_rate) unit vector
 CONTINUOUS: dict[str, tuple] = {
@@ -83,6 +91,9 @@ class CyberwaveEdgeMavlinkDriver:
             or "tcp:127.0.0.1:5760"
         )
         self.vehicle = MavlinkVehicle(conn)
+
+        self._prop_angles = [0.0] * 4
+        self._prop_last = time.time()
 
         self._cmd_queue: "queue.Queue[dict]" = queue.Queue()
         self._cont_lock = threading.Lock()
@@ -164,6 +175,30 @@ class CyberwaveEdgeMavlinkDriver:
             quat = self.vehicle.attitude_quat_enu()
             if quat is not None:
                 self._mq.update_twin_rotation(self.twin_uuid, quat)
+            self._publish_props(now)
+
+    def _publish_props(self, now: float) -> None:
+        """Spin the twin's prop joints from real motor output."""
+        pwm = self.vehicle.state.get("servo_pwm")
+        if pwm is None:
+            return
+        dt = min(now - self._prop_last, 0.5)
+        self._prop_last = now
+        positions, velocities = {}, {}
+        for i, name in enumerate(PROP_JOINTS):
+            omega = 0.0
+            if pwm[i] and pwm[i] > 1050:
+                omega = PROP_DIRS[i] * PROP_VISUAL_MAX_RAD_S * \
+                    min((pwm[i] - 1000) / 1000.0, 1.0)
+            self._prop_angles[i] = (self._prop_angles[i] + omega * dt) % (2 * math.pi)
+            positions[name] = self._prop_angles[i]
+            velocities[name] = omega
+        try:
+            # aggregated form: not client-rate-limited, one message for all four
+            self._mq.update_joints_state(self.twin_uuid, positions,
+                                         velocities=velocities, timestamp=now)
+        except Exception:
+            logger.debug("prop joint publish failed", exc_info=True)
 
     def _command_loop(self) -> None:
         while not self._stop.is_set():
