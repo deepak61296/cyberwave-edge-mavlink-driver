@@ -14,5 +14,5 @@ Prereqs: SITL on `tcp:127.0.0.1:5760`, the driver running, and
 | `test_b2_discrete_cancels_burst.py` | Discrete commands shut down stick input before executing | driver log: `executing land` → `sticks zeroed` within ~30 ms → `mode LAND confirmed`, no mode fight |
 | `test_b3_sim_tele_rejected.py` | Only `tele` executes on the aircraft by default | the `sim_tele` takeoff appears on the wire but the driver logs no execution and stays disarmed |
 
-The happy-path test is the mission itself: `../..//mission_square.py`
+The happy-path test is the mission itself: `../examples/mission_square.py`
 (takeoff → 4 continuous-command legs with dead-man hovers → land).
