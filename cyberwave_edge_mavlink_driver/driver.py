@@ -44,7 +44,11 @@ DEFAULT_TAKEOFF_ALT = 2.0
 # The viewer renders joint POSITIONS only, so we integrate a PWM-scaled
 # visual spin rate into wrapped angles — legible spin, not true prop RPM.
 PROP_JOINTS = ("prop_1_joint", "prop_2_joint", "prop_3_joint", "prop_4_joint")
-PROP_DIRS = (1, -1, 1, -1)          # alternating CW/CCW, quad convention
+# Directions match the asset's URDF (prop_1/2 carry the CCW mesh, prop_3/4
+# the CW mesh — donor rotor roles), which is also ArduPilot's quad-X motor
+# order: M1 front-right CCW, M2 rear-left CCW, M3 front-left CW, M4
+# rear-right CW. CCW viewed from above = positive rotation about +Z.
+PROP_DIRS = (1, 1, -1, -1)
 PROP_VISUAL_MAX_RAD_S = 20.0
 
 # command -> body-frame (vx, vy, vz, yaw_rate) unit vector
@@ -187,7 +191,9 @@ class CyberwaveEdgeMavlinkDriver:
         positions, velocities = {}, {}
         for i, name in enumerate(PROP_JOINTS):
             omega = 0.0
-            if pwm[i] and pwm[i] > 1050:
+            # sanity-bounded: unused channels report 0, and a raw 65535
+            # (UINT16 "unknown") must not read as a full-speed prop
+            if pwm[i] and 1050 < pwm[i] <= 2200:
                 omega = PROP_DIRS[i] * PROP_VISUAL_MAX_RAD_S * \
                     min((pwm[i] - 1000) / 1000.0, 1.0)
             self._prop_angles[i] = (self._prop_angles[i] + omega * dt) % (2 * math.pi)
@@ -225,8 +231,9 @@ class CyberwaveEdgeMavlinkDriver:
                     self.vehicle.send_velocity_body(0, 0, 0, 0)
                     ok = True
                 elif cmd == "emergency_stop":
-                    self.vehicle.emergency_disarm()
-                    ok = True
+                    # verified, not assumed: ok only when the armed bit
+                    # actually drops (the pump reads it off the heartbeat)
+                    ok = self.vehicle.emergency_disarm()
                 else:
                     logger.info("command %r not implemented", cmd)
                     ok = False
@@ -302,4 +309,10 @@ class CyberwaveEdgeMavlinkDriver:
             logger.info("shutting down")
         finally:
             self._stop.set()
+            try:
+                # best-effort stick zero on the way out (dead-man philosophy:
+                # a dying driver must not leave a velocity standing)
+                self.vehicle.send_velocity_body(0, 0, 0, 0)
+            except Exception:
+                pass
             self.vehicle.disconnect()

@@ -166,12 +166,23 @@ class MavlinkVehicle:
     def return_to_home(self) -> bool:
         return self.ensure_mode("RTL")
 
-    def emergency_disarm(self) -> None:
-        """Force-disarm regardless of state (magic 21196 = force)."""
+    def emergency_disarm(self, timeout: float = 3.0) -> bool:
+        """Force-disarm regardless of state (magic 21196 = force).
+
+        Returns True once the heartbeat's armed bit drops — sent is not
+        disarmed, same trust model as every other command here."""
         self.m.mav.command_long_send(
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 0, 21196, 0, 0, 0, 0, 0)
         logger.warning("EMERGENCY force-disarm sent")
+        end = time.time() + timeout
+        while time.time() < end:
+            if not self.state["armed"]:
+                logger.info("disarm confirmed")
+                return True
+            time.sleep(0.05)
+        logger.error("armed bit still set %.1fs after force-disarm", timeout)
+        return False
 
     def send_velocity_body(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
         """One body-frame velocity setpoint. Callers stream this at ~10 Hz."""

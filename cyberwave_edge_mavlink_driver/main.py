@@ -1,5 +1,6 @@
 import logging
 import os
+import signal
 import sys
 
 from cyberwave_edge_mavlink_driver.driver import CyberwaveEdgeMavlinkDriver
@@ -22,6 +23,10 @@ def main() -> None:
         twin_json_file=os.environ.get("CYBERWAVE_TWIN_JSON_FILE"),
         connection=os.environ.get("MAVLINK_CONNECTION"),  # default tcp:127.0.0.1:5760
     )
+
+    # systemd stop sends SIGTERM; turn it into a clean shutdown so run()'s
+    # finally block zeroes the sticks and closes the MAVLink socket.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     try:
         driver.run()
