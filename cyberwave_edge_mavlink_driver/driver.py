@@ -53,7 +53,7 @@ PROP_JOINTS = ("prop_1_joint", "prop_2_joint", "prop_3_joint", "prop_4_joint")
 # order: M1 front-right CCW, M2 rear-left CCW, M3 front-left CW, M4
 # rear-right CW. CCW viewed from above = positive rotation about +Z.
 PROP_DIRS = (1, 1, -1, -1)
-PROP_VISUAL_MAX_RAD_S = 150.0  # idle spin (1100 us) then reads ~15 rad/s; faster aliases at 10 Hz
+PROP_VISUAL_MAX_RAD_S = 60.0  # idle (1100 us) = 6 rad/s: ~35 deg per 10 Hz update, no wagon-wheel reversal
 
 # command -> body-frame (vx, vy, vz, yaw_rate) unit vector
 CONTINUOUS: dict[str, tuple] = {
