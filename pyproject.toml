@@ -21,3 +21,9 @@ driver = "cyberwave_edge_mavlink_driver.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cyberwave_edge_mavlink_driver*"]
+
+[tool.pytest.ini_options]
+# tests/ also holds live flight scripts that move a real aircraft at
+# import time, so only test_unit_*.py may be collected.
+testpaths = ["tests"]
+python_files = ["test_unit_*.py"]

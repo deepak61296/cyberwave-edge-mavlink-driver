@@ -1,4 +1,18 @@
-# Contract-compliance flight tests
+# Tests
+
+Two kinds live here.
+
+## Unit tests
+
+`test_unit_driver.py` needs no aircraft, no broker and no network:
+
+    python -m pytest -q
+
+Bare `pytest` runs only these. `pyproject.toml` pins collection to
+`test_unit_*.py` because the scripts below move a real aircraft at import
+time.
+
+## Contract-compliance flight tests
 
 Live integration tests against ArduPilot SITL + the Cyberwave broker — not
 unit tests. Each proves one constraint of the drone command contract
