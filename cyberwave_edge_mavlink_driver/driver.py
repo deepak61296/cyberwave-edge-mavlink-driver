@@ -12,8 +12,10 @@ Four loops, mirroring the architecture that flew as bridge_v0:
             at 10 Hz; on expiry, zero the sticks once (dead-man)
   MQTT      (paho's thread): parse envelope, filter source_type, enqueue
 
-Command vocabulary implemented (subset of dji/mini-4-pro contract v1):
-  discrete:   takeoff, land, return_to_home, stop, emergency_stop
+Command vocabulary implemented (subset of dji/mini-4-pro contract v1,
+plus arm/disarm, which that contract has no verb for):
+  discrete:   takeoff, land, return_to_home, stop, emergency_stop,
+              arm, disarm
   continuous: move_forward, move_backward, strafe_left, strafe_right,
               turn_left, turn_right, ascend, descend
 """
@@ -36,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 CONTINUOUS_TIMEOUT_S = 0.5   # DJI contract: zero sticks if no refresh in 500 ms
 TELEMETRY_HZ = 10.0
+ARM_CONFIRM_S = 5.0          # how long to wait for the armed bit to agree
+STATE_PERIOD_S = 1.0         # armed/mode heartbeat to the twin (also on change)
 DEFAULT_SPEED = 1.0          # m/s for continuous locomotion
 DEFAULT_YAW_RATE = 0.5       # rad/s for turns
 DEFAULT_TAKEOFF_ALT = 2.0
@@ -98,6 +102,8 @@ class CyberwaveEdgeMavlinkDriver:
 
         self._prop_angles = [0.0] * 4
         self._prop_last = time.time()
+        self._state_last: tuple = (None, None)   # (armed, mode_name) last sent
+        self._state_at = 0.0
 
         self._cmd_queue: "queue.Queue[dict]" = queue.Queue()
         self._cont_lock = threading.Lock()
@@ -164,15 +170,20 @@ class CyberwaveEdgeMavlinkDriver:
     # ------------------------------------------------------------------
 
     def _pump_loop(self) -> None:
-        last_pub = 0.0
+        # Publish the newest cached pose on a fixed deadline: skipping
+        # jittery samples instead cost us ~3 of the 10 Hz.
+        period = 1.0 / TELEMETRY_HZ
+        next_pub = time.time()
         while not self._stop.is_set():
-            k = self.vehicle.pump_once(timeout=1.0)
-            if k not in ("LOCAL_POSITION_NED", "ATTITUDE"):
-                continue
+            self.vehicle.pump_once(timeout=0.1)
             now = time.time()
-            if now - last_pub < 1.0 / TELEMETRY_HZ:
+            self._publish_vehicle_state(now)
+            if now < next_pub:
                 continue
-            last_pub = now
+            # advance the grid, never to now, or a stalled loop fires twice
+            next_pub += period
+            if next_pub < now:
+                next_pub = now + period
             pos = self.vehicle.position_enu()
             if pos is not None:
                 self._mq.publish_twin_position(self.twin_uuid, *pos)
@@ -180,6 +191,29 @@ class CyberwaveEdgeMavlinkDriver:
             if quat is not None:
                 self._mq.update_twin_rotation(self.twin_uuid, quat)
             self._publish_props(now)
+
+    def _publish_vehicle_state(self, now: float, force: bool = False) -> None:
+        """Armed flag and flight mode, on change and at least once a second."""
+        s = self.vehicle.state
+        snapshot = (bool(s["armed"]), s["mode_name"])
+        if not force and snapshot == self._state_last \
+                and now - self._state_at < STATE_PERIOD_S:
+            return
+        self._state_last, self._state_at = snapshot, now
+        payload = {
+            "type": "vehicle_state",
+            "armed": snapshot[0],
+            "mode": snapshot[1],
+            "timestamp": now,
+        }
+        pwm = s.get("servo_pwm")
+        if pwm is not None:
+            payload["motors_pwm"] = list(pwm)
+        try:
+            self._mq.publish(
+                f"cyberwave/twin/{self.twin_uuid}/telemetry", payload)
+        except Exception:
+            logger.debug("vehicle_state publish failed", exc_info=True)
 
     def _publish_props(self, now: float) -> None:
         """Spin the twin's prop joints from real motor output."""
@@ -220,6 +254,7 @@ class CyberwaveEdgeMavlinkDriver:
             # the mode change for up to 500 ms.
             with self._cont_lock:
                 self._cont_vec = None
+            reason, ok = "", False
             try:
                 if cmd == "takeoff":
                     ok = self.vehicle.takeoff(float(data.get("altitude", DEFAULT_TAKEOFF_ALT)))
@@ -234,20 +269,40 @@ class CyberwaveEdgeMavlinkDriver:
                     # verified, not assumed: ok only when the armed bit
                     # actually drops (the pump reads it off the heartbeat)
                     ok = self.vehicle.emergency_disarm()
+                elif cmd in ("arm", "disarm"):
+                    ok, reason = self.vehicle.set_armed(
+                        cmd == "arm", force=bool(data.get("force", False)),
+                        timeout=ARM_CONFIRM_S)
                 else:
                     logger.info("command %r not implemented", cmd)
                     ok = False
-            except Exception:
+                    reason = f"command {cmd!r} not implemented"
+            except Exception as exc:
                 logger.exception("command %s failed", cmd)
                 ok = False
-            self._reply_status(cmd, ok)
+                reason = f"{type(exc).__name__}: {exc}"
+            self._reply_status(cmd, ok, reason=reason)
+            self._publish_vehicle_state(time.time(), force=True)
 
-    def _reply_status(self, cmd: Optional[str], ok: bool) -> None:
+    def _reply_status(self, cmd: Optional[str], ok: bool,
+                      reason: str = "") -> None:
         """Answer on the command topic (contract direction "both"). Discrete
-        commands only — acking 10 Hz continuous bursts would flood the topic."""
+        commands only — acking 10 Hz continuous bursts would flood the topic.
+        `status` is the contract's field; the rest is additive."""
+        s = self.vehicle.state
+        payload = {
+            "status": "ok" if ok else "error",
+            "ok": bool(ok),
+            "command": cmd,
+            "armed": bool(s["armed"]),
+            "mode": s["mode_name"],
+            "reason": reason,
+        }
+        pwm = s.get("servo_pwm")
+        if pwm is not None:
+            payload["motors_pwm"] = list(pwm)
         try:
-            self._mq.publish_command_message(
-                self.twin_uuid, {"status": "ok" if ok else "error", "command": cmd})
+            self._mq.publish_command_message(self.twin_uuid, payload)
         except Exception:
             logger.warning("could not publish status reply for %s", cmd)
 
@@ -304,7 +359,7 @@ class CyberwaveEdgeMavlinkDriver:
                     self._connect_mqtt()
                 s = self.vehicle.state
                 logger.info("hb: armed=%s alt=%.2f mode=%s",
-                            s["armed"], s["alt"], s["mode"])
+                            s["armed"], s["alt"], s["mode_name"])
         except KeyboardInterrupt:
             logger.info("shutting down")
         finally:

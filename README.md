@@ -33,7 +33,48 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 | Kind | Commands | MAVLink translation |
 |---|---|---|
 | discrete | `takeoff`, `land`, `return_to_home`, `stop`, `emergency_stop` | GUIDED+arm+`NAV_TAKEOFF`, LAND, RTL, zero-velocity, force-disarm |
+| discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit |
 | continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints (`SET_POSITION_TARGET_LOCAL_NED`) streamed at 10 Hz |
+
+### `arm` / `disarm` (vendor-neutral extension)
+
+A DJI aircraft arms itself on takeoff, so the published contract has no arm
+verb. An autopilot does not, hence these two additive commands.
+
+```json
+{"source_type": "tele", "command": "arm",    "data": {}}
+{"source_type": "tele", "command": "arm",    "data": {"force": true}}
+{"source_type": "tele", "command": "disarm", "data": {}}
+{"source_type": "tele", "command": "disarm", "data": {"force": true}}
+```
+
+`force` sets the `MAV_CMD_COMPONENT_ARM_DISARM` param2 magic number, **2989**
+(arm anyway) or **21196** (disarm anyway). Without it param2 is 0 and the
+autopilot's own checks decide, so a refusal is a *correct* outcome, not a
+driver error. `emergency_stop` still force-disarms.
+
+Both wait up to 5 s for the vehicle's `MAV_MODE_FLAG_SAFETY_ARMED` bit to
+match and collect `STATUSTEXT` meanwhile, so a refusal comes back in the
+flight controller's own words.
+
+### Status replies
+
+Every discrete command answers on the same command topic (contract
+direction "both"). `status` is unchanged; the rest is additive:
+
+```json
+{"status": "error", "ok": false, "command": "arm", "armed": false,
+ "mode": "STABILIZE", "reason": "Arm: RC not found",
+ "motors_pwm": [1000, 1000, 1000, 1000]}
+```
+
+### Twin telemetry
+
+- `cyberwave/twin/<uuid>/position` and `/rotation` — pose, steady 10 Hz
+- `cyberwave/joint/<uuid>/update` — prop spin from real motor PWM, 10 Hz
+- `cyberwave/twin/<uuid>/telemetry` — `{"type": "vehicle_state", "armed":
+  bool, "mode": str, "motors_pwm": [...]}`, on every change and at least
+  once a second
 
 Contract behaviors honored:
 
@@ -54,7 +95,9 @@ Four loops, one rule: **exactly one thread reads MAVLink**.
 
 - **pump** — sole MAVLink reader; folds messages into shared state and
   publishes position (NED→Z-up) + attitude quaternion to the twin's MQTT
-  topics at 10 Hz
+  topics on a fixed 10 Hz deadline. Armed and mode come **only** from
+  heartbeats that pass `is_vehicle_heartbeat()`; a shared link carries
+  other heartbeats and folding one in makes `armed` lie.
 - **command worker** — consumes a queue fed by MQTT; discrete commands
   block here (mode verified via HEARTBEAT, actions trusted only on
   COMMAND_ACK), never in the MQTT callback
@@ -84,6 +127,7 @@ snippet above.
 
 - [x] ArduPilot SITL: full vocabulary proven end-to-end
 - [ ] PX4 SITL pass (OFFBOARD mode + takeoff flow deltas)
+- [x] Arm / disarm from the SDK, with the FC's refusal reason returned
 - [ ] Battery/status telemetry topics
 - [ ] Gimbal commands (contract supports; needs a gimbal target)
 - [ ] Real flight controller (bench, props off, then flight — hard safety gates)
