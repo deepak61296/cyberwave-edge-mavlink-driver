@@ -124,6 +124,30 @@ def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     assert driver.vehicle.calls[-1] == expected
 
 
+def test_kill_in_the_air_needs_force(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "kill", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "refused: in the air, send force to cut the motors anyway"
+    assert driver.vehicle.calls == []
+
+
+def test_kill_in_the_air_with_force_cuts_the_motors(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "kill", "data": {"force": True}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("kill",)]
+
+
+def test_kill_on_the_ground_needs_no_force(driver):
+    driver.link.state["armed"] = True
+    reply = send(driver, {"source_type": "tele", "command": "kill", "data": {}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("kill",)]
+
+
 def test_emergency_stop_hovers_and_leaves_the_motors_alone(driver):
     driver.link.state["armed"] = True
     driver.link.state["alt"] = 3.0

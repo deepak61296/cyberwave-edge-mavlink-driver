@@ -219,6 +219,9 @@ class MavlinkDriver(BaseDriver):
         if cmd in ("arm", "disarm"):
             return v.set_armed(cmd == "arm", force=bool(data.get("force", False)))
         if cmd == "kill":
+            # cutting the motors in flight drops the aircraft, so say it out loud
+            if v.in_air() and not data.get("force", False):
+                return False, "refused: in the air, send force to cut the motors anyway"
             return v.kill()
         if cmd == "set_home_here":
             return v.set_home_here()
