@@ -80,6 +80,9 @@ class FakeVehicle:
     def send_velocity_body(self, *a):
         self.calls.append(("velocity", a))
 
+    def tick(self):
+        pass
+
 
 @pytest.fixture
 def driver():

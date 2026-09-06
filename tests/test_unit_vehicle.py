@@ -37,6 +37,7 @@ class FakeMav:
             command_long_send=self._command_long_send,
             set_position_target_local_ned_send=lambda *a: self.sent.append(("vel",) + a),
             param_set_send=lambda sys, comp, name, value, kind: self.params.__setitem__(name, value),
+            heartbeat_send=lambda *a: self.sent.append(("hb",) + a),
         )
 
     def _command_long_send(self, *args):
@@ -51,7 +52,10 @@ class FakeMav:
         self.modes_asked.append(name)
 
     def commands(self):
-        return [s[2] for s in self.sent if s[0] != "vel"]
+        return [s[2] for s in self.sent if s[0] not in ("vel", "hb")]
+
+    def heartbeats(self):
+        return [s for s in self.sent if s[0] == "hb"]
 
 
 def link_with(on_send=None):
@@ -233,6 +237,28 @@ def test_px4_force_arm_is_downgraded_to_a_plain_arm():
     link = link_with(lambda *a: link.state.__setitem__("armed", True))
     assert PX4(link).set_armed(True, force=True) == (True, "")
     assert link.m.sent[0][4:6] == (1, 0)
+
+
+def test_px4_ticks_a_gcs_heartbeat_once_a_second():
+    """No GCS heartbeat, no STATUSTEXT: PX4 gates the text channel on it."""
+    link = link_with()
+    v = PX4(link)
+    for _ in range(10):
+        v.tick()
+    assert len(link.m.heartbeats()) == 1
+    assert link.m.heartbeats()[0][1] == mavutil.mavlink.MAV_TYPE_GCS
+    v._heartbeat_at -= 1.0
+    v.tick()
+    assert len(link.m.heartbeats()) == 2
+
+
+def test_ardupilot_never_heartbeats():
+    """A GCS heartbeat here would engage ArduPilot's GCS failsafe."""
+    link = link_with()
+    v = ArduPilot(link)
+    for _ in range(10):
+        v.tick()
+    assert link.m.sent == []
 
 
 def test_px4_release_leaves_offboard_for_hold():

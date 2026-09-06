@@ -138,6 +138,7 @@ class MavlinkDriver(BaseDriver):
 
     async def on_tick(self):
         now = time.time()
+        self.vehicle.tick()
         if self._stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
             if not self._sticks_live:
                 self._sticks_live = True

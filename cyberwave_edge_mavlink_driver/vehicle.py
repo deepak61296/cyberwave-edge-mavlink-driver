@@ -82,6 +82,9 @@ class Vehicle:
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
         self.link.send_velocity_body(vx, vy, vz, yaw_rate)
 
+    def tick(self):
+        """Called every driver tick. Nothing to keep up by default."""
+
     def _acked(self, cmd, *params, timeout=5.0):
         """Send one command and turn its ack into (ok, reason)."""
         self.link.send_command(cmd, *params)

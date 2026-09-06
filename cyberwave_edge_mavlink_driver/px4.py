@@ -23,6 +23,7 @@ AUTO_SUB = {"READY": 1, "TAKEOFF": 2, "LOITER": 3, "MISSION": 4, "RTL": 5, "LAND
 
 AUTO = MAIN["AUTO"]
 TAKEOFF_CONFIRM_S = 20.0
+GCS_HEARTBEAT_S = 1.0
 
 
 def custom_mode(main, sub=0):
@@ -42,6 +43,21 @@ def mode_name(custom):
 class PX4(Vehicle):
 
     name = "px4"
+
+    def __init__(self, link):
+        super().__init__(link)
+        self._heartbeat_at = 0.0
+
+    def tick(self):
+        # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
+        # the last 2.5 s, so without this we never learn why anything failed.
+        # ArduPilot must not get it: there a GCS heartbeat arms its GCS failsafe.
+        now = time.time()
+        if now - self._heartbeat_at >= GCS_HEARTBEAT_S:
+            self._heartbeat_at = now
+            self.link.m.mav.heartbeat_send(
+                mavutil.mavlink.MAV_TYPE_GCS,
+                mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
     def mode_name(self):
         mode = self.link.state["mode"]
