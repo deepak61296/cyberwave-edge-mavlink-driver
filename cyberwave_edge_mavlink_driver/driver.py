@@ -211,11 +211,14 @@ class MavlinkDriver(BaseDriver):
             return v.land()
         if cmd == "return_to_home":
             return v.return_to_home()
-        if cmd in ("brake", "cancel_takeoff", "cancel_landing", "cancel_return_to_home"):
+        # emergency_stop hovers: the same script must be safe on every
+        # aircraft, and kill is the verb that says it cuts the motors
+        if cmd in ("brake", "emergency_stop", "cancel_takeoff",
+                   "cancel_landing", "cancel_return_to_home"):
             return v.hold()
         if cmd in ("arm", "disarm"):
             return v.set_armed(cmd == "arm", force=bool(data.get("force", False)))
-        if cmd in ("kill", "emergency_stop"):
+        if cmd == "kill":
             return v.kill()
         if cmd == "set_home_here":
             return v.set_home_here()

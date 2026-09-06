@@ -115,13 +115,22 @@ def test_arm_command_parsed_and_answered(driver):
     ("disarm", {}, ("set_armed", False, False)),
     ("disarm", {"force": True}, ("set_armed", False, True)),
     ("kill", {}, ("kill",)),
-    ("emergency_stop", {}, ("kill",)),
+    ("emergency_stop", {}, ("hold",)),
     ("brake", {}, ("hold",)),
     ("cancel_landing", {}, ("hold",)),
 ])
 def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     send(driver, {"source_type": "tele", "command": cmd, "data": data})
     assert driver.vehicle.calls[-1] == expected
+
+
+def test_emergency_stop_hovers_and_leaves_the_motors_alone(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "emergency_stop", "data": {}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("hold",)]
+    assert driver.link.state["armed"] is True
 
 
 def test_refused_arm_reply_carries_the_reason(driver):

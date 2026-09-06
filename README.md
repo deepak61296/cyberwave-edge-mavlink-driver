@@ -34,9 +34,9 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 |---|---|---|---|
 | discrete | `takeoff` | GUIDED, arm, `NAV_TAKEOFF` | `AUTO.TAKEOFF` then arm, confirmed by the landed state |
 | discrete | `land`, `return_to_home` | LAND, RTL | `AUTO.LAND`, `AUTO.RTL` |
-| discrete | `brake`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
+| discrete | `brake`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
 | discrete | `stop` | zero the sticks | zero the sticks, then Hold |
-| discrete | `emergency_stop`, `kill` | force disarm | force disarm |
+| discrete | `kill` | force disarm | force disarm |
 | discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused while armed) | same |
 | discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit | same; force arm is not possible over MAVLink |
 | continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints at 10 Hz, in GUIDED | same, in OFFBOARD |
@@ -59,7 +59,8 @@ verb. An autopilot does not, hence these two additive commands.
 `force` sets the `MAV_CMD_COMPONENT_ARM_DISARM` param2 magic number, **2989**
 (arm anyway) or **21196** (disarm anyway). Without it param2 is 0 and the
 autopilot's own checks decide, so a refusal is a *correct* outcome, not a
-driver error. `emergency_stop` still force-disarms.
+driver error. `emergency_stop` cancels automation and hovers; `kill` is the
+verb that cuts the motors.
 
 Both wait up to 5 s for the vehicle's `MAV_MODE_FLAG_SAFETY_ARMED` bit to
 match and collect `STATUSTEXT` meanwhile, so a refusal comes back in the
