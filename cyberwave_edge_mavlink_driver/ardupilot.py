@@ -29,17 +29,19 @@ class ArduPilot(Vehicle):
         want = (self.link.m.mode_mapping() or {}).get(name)
         if want is None:
             return False, f"unknown mode {name}"
-        end = time.time() + timeout
+        t0 = time.time()
         next_send = 0.0
-        while time.time() < end:
+        while time.time() < t0 + timeout:
             if self.link.state["mode"] == want:
                 return True, ""
             if time.time() >= next_send:
                 self.link.m.set_mode(name)
                 next_send = time.time() + 1.0
             time.sleep(0.1)
-        logger.error("could not enter mode %s", name)
-        return False, f"could not enter {name} within {timeout:.0f}s"
+        # the autopilot usually says why on the text channel; prefer its words
+        why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
+        logger.error("could not enter mode %s: %s", name, why)
+        return False, why or f"could not enter {name} within {timeout:.0f}s"
 
     def set_armed(self, arm, force=False, timeout=5.0):
         # LAND is not armable, the bench found out

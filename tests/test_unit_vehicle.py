@@ -165,6 +165,23 @@ def test_ardupilot_arms_out_of_land_via_guided():
     assert link.m.modes_asked == ["GUIDED"]
 
 
+def test_ardupilot_mode_refusal_returns_the_fc_words():
+    """A mode the vehicle will not take is refused on the text channel."""
+    link = link_with()
+    link.m.set_mode = lambda name: link._texts.append(
+        (time.time(), "Flight mode change failed"))
+    ok, reason = ArduPilot(link).set_mode("BRAKE", timeout=0.3)
+    assert ok is False
+    assert reason == "Flight mode change failed"
+
+
+def test_ardupilot_mode_refusal_without_words_says_what_it_waited_for():
+    link = link_with()
+    ok, reason = ArduPilot(link).set_mode("BRAKE", timeout=0.3)
+    assert ok is False
+    assert reason.startswith("could not enter BRAKE within")
+
+
 def test_ardupilot_hold_on_the_ground_does_nothing():
     link = link_with()
     assert ArduPilot(link).hold() == (True, "")
