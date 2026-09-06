@@ -4,7 +4,8 @@ Two kinds live here.
 
 ## Unit tests
 
-`test_unit_driver.py` needs no aircraft, no broker and no network:
+`test_unit_link.py`, `test_unit_vehicle.py` and `test_unit_driver.py` need
+no aircraft, no broker and no network:
 
     python -m pytest -q
 

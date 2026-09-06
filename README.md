@@ -30,11 +30,19 @@ braking, land, disarm — mirrored live in the Cyberwave 3D viewer at 10 Hz
 Implements the standard Cyberwave drone vocabulary (as published on the
 `dji/mini-4-pro` catalog asset, schema v1):
 
-| Kind | Commands | MAVLink translation |
-|---|---|---|
-| discrete | `takeoff`, `land`, `return_to_home`, `stop`, `emergency_stop` | GUIDED+arm+`NAV_TAKEOFF`, LAND, RTL, zero-velocity, force-disarm |
-| discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit |
-| continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints (`SET_POSITION_TARGET_LOCAL_NED`) streamed at 10 Hz |
+| Kind | Commands | ArduPilot | PX4 |
+|---|---|---|---|
+| discrete | `takeoff` | GUIDED, arm, `NAV_TAKEOFF` | `AUTO.TAKEOFF` then arm, confirmed by the landed state |
+| discrete | `land`, `return_to_home` | LAND, RTL | `AUTO.LAND`, `AUTO.RTL` |
+| discrete | `brake`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
+| discrete | `stop` | zero the sticks | zero the sticks, then Hold |
+| discrete | `emergency_stop`, `kill` | force disarm | force disarm |
+| discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused while armed) | same |
+| discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit | same; force arm is not possible over MAVLink |
+| continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints at 10 Hz, in GUIDED | same, in OFFBOARD |
+
+Every discrete command returns `(ok, reason)` from the autopilot backend, so
+a refusal comes back with the flight controller's own words.
 
 ### `arm` / `disarm` (vendor-neutral extension)
 
@@ -63,18 +71,20 @@ Every discrete command answers on the same command topic (contract
 direction "both"). `status` is unchanged; the rest is additive:
 
 ```json
-{"status": "error", "ok": false, "command": "arm", "armed": false,
- "mode": "STABILIZE", "reason": "Arm: RC not found",
- "motors_pwm": [1000, 1000, 1000, 1000]}
+{"status": "error", "ok": false, "command": "arm", "reason": "Arm: RC not found",
+ "armed": false, "mode": "STABILIZE", "flight_state": "ready", "timestamp": 1757200000.0}
 ```
+
+`flight_state` is one of `disconnected`, `ready`, `motors_on`, `in_air`,
+`returning`, `landed`.
 
 ### Twin telemetry
 
-- `cyberwave/twin/<uuid>/position` and `/rotation` — pose, steady 10 Hz
-- `cyberwave/joint/<uuid>/update` — prop spin from real motor PWM, 10 Hz
-- `cyberwave/twin/<uuid>/telemetry` — `{"type": "vehicle_state", "armed":
-  bool, "mode": str, "motors_pwm": [...]}`, on every change and at least
-  once a second
+- `cyberwave/twin/<uuid>/position` and `/rotation`: pose, steady 10 Hz
+- `cyberwave/joint/<uuid>/update`: prop spin from real motor PWM, 10 Hz
+- `cyberwave/twin/<uuid>/telemetry`: `{"type": "vehicle_state", "armed":
+  bool, "mode": str, "flight_state": str, "motors_pwm": [...]}`, on every
+  change and at least once a second
 
 Contract behaviors honored:
 
@@ -91,20 +101,32 @@ Contract behaviors honored:
 
 ## Architecture
 
-Four loops, one rule: **exactly one thread reads MAVLink**.
+Built on the SDK's `BaseDriver`, which owns MQTT, the twin, the manifest
+and the 10 Hz tick loop. One rule: **exactly one thread reads MAVLink**.
 
-- **pump** — sole MAVLink reader; folds messages into shared state and
-  publishes position (NED→Z-up) + attitude quaternion to the twin's MQTT
-  topics on a fixed 10 Hz deadline. Armed and mode come **only** from
-  heartbeats that pass `is_vehicle_heartbeat()`; a shared link carries
-  other heartbeats and folding one in makes `armed` lie.
-- **command worker** — consumes a queue fed by MQTT; discrete commands
-  block here (mode verified via HEARTBEAT, actions trusted only on
-  COMMAND_ACK), never in the MQTT callback
-- **streamer** — emits velocity setpoints while a continuous command is
-  fresh; brakes once on expiry
-- **MQTT callback** — parse envelope, filter `source_type`, enqueue; never
-  blocks
+```
+cyberwave_edge_mavlink_driver/
+  main.py        env check, logging, MavlinkDriver().run()
+  driver.py      MavlinkDriver(BaseDriver): commands, sticks, lifecycle
+  contract.py    the verb lists, the stick table, flight_state()
+  link.py        MavlinkLink: socket, pump, state cache, acks, STATUSTEXT
+  vehicle.py     Vehicle: verbs both autopilots share, pick_vehicle(link)
+  ardupilot.py   ArduPilot: named modes, GUIDED takeoff, BRAKE hold
+  px4.py         PX4: custom_mode main/sub, AUTO.TAKEOFF then arm, Hold
+  telemetry.py   what the twin is told: pose, prop spin, vehicle_state
+```
+
+- **pump** (thread) is the sole MAVLink reader; it folds messages into the
+  link's state cache. Armed and mode come **only** from heartbeats that
+  pass `is_vehicle_heartbeat()`; a shared link carries other heartbeats
+  and folding one in makes `armed` lie.
+- **discrete commands** run one at a time in a worker thread, release the
+  sticks first, and answer on the command topic when done.
+- **sticks** are stored by the command handler and streamed from the tick
+  loop while fresh; on expiry the backend releases them once.
+- **publishers** are registry publishers on the tick loop, `source_type`
+  `edge`, and run whether or not a controller is attached.
+- The backend is picked from `HEARTBEAT.autopilot` (3 ArduPilot, 12 PX4).
 
 ## Run it (SITL quickstart)
 
@@ -126,7 +148,8 @@ snippet above.
 ## Status / roadmap
 
 - [x] ArduPilot SITL: full vocabulary proven end-to-end
-- [ ] PX4 SITL pass (OFFBOARD mode + takeoff flow deltas)
+- [x] PX4 backend written from the in-tree command reference
+- [ ] PX4 SITL pass
 - [x] Arm / disarm from the SDK, with the FC's refusal reason returned
 - [ ] Battery/status telemetry topics
 - [ ] Gimbal commands (contract supports; needs a gimbal target)
