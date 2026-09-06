@@ -63,6 +63,14 @@ class FakeVehicle:
         self.calls.append(("hold",))
         return self.result
 
+    def set_home_here(self):
+        self.calls.append(("set_home_here",))
+        return self.result
+
+    def reboot(self):
+        self.calls.append(("reboot",))
+        return self.result
+
     def prepare_sticks(self):
         self.calls.append(("prepare",))
 
@@ -118,6 +126,8 @@ def test_arm_command_parsed_and_answered(driver):
     ("emergency_stop", {}, ("hold",)),
     ("brake", {}, ("hold",)),
     ("cancel_landing", {}, ("hold",)),
+    ("set_home_here", {}, ("set_home_here",)),
+    ("reboot", {}, ("reboot",)),
 ])
 def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     send(driver, {"source_type": "tele", "command": cmd, "data": data})

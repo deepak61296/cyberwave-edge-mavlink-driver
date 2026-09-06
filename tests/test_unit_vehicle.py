@@ -125,8 +125,17 @@ def test_reboot_is_refused_while_armed():
     link = link_with()
     link.state["armed"] = True
     ok, reason = Vehicle(link).reboot()
-    assert ok is False and "armed" in reason
+    assert ok is False
+    assert reason == "refused: the aircraft is armed"
     assert link.m.sent == []
+
+
+def test_set_home_here_reports_a_refused_ack():
+    link = link_with(lambda *a: link.state["acks"].__setitem__(
+        mavutil.mavlink.MAV_CMD_DO_SET_HOME, mavutil.mavlink.MAV_RESULT_DENIED))
+    ok, reason = Vehicle(link).set_home_here()
+    assert ok is False
+    assert reason == "MAV_RESULT_DENIED"
 
 
 def test_in_air_prefers_the_landed_state_over_altitude():
