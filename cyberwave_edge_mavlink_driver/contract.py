@@ -31,8 +31,8 @@ def flight_state(connected, armed, in_air, returning, was_airborne):
     """One word for where the aircraft is in a flight."""
     if not connected:
         return "disconnected"
-    if armed and in_air:
+    if not armed:
+        return "ready"
+    if in_air:
         return "returning" if returning else "in_air"
-    if armed:
-        return "motors_on"
-    return "landed" if was_airborne else "ready"
+    return "landed" if was_airborne else "motors_on"

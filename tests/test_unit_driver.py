@@ -36,6 +36,7 @@ class FakeVehicle:
         self.link = link
         self.calls = []
         self.result = (True, "")
+        self.is_returning = False
 
     def armed(self):
         return bool(self.link.state["armed"])
@@ -47,7 +48,7 @@ class FakeVehicle:
         return self.link.state["alt"] > 0.5
 
     def returning(self):
-        return False
+        return self.is_returning
 
     def set_armed(self, arm, force=False, timeout=5.0):
         self.calls.append(("set_armed", arm, force))
@@ -260,22 +261,29 @@ def test_props_spin_from_pwm(driver):
     (True, True, False, False, False, "motors_on"),
     (True, True, True, False, True, "in_air"),
     (True, True, True, True, True, "returning"),
-    (True, False, False, False, True, "landed"),
+    (True, True, False, False, True, "landed"),
+    (True, False, False, False, True, "ready"),
 ])
 def test_flight_state(connected, armed, in_air, returning, was_airborne, expected):
     assert contract.flight_state(connected, armed, in_air, returning, was_airborne) == expected
 
 
-def test_flight_state_from_the_link(driver):
-    assert driver.telemetry.flight_state() == "ready"
-    driver.link.state["armed"] = True
-    driver.link.state["alt"] = 3.0
-    assert driver.telemetry.flight_state() == "in_air"
-    driver.link.state["armed"] = False
-    driver.link.state["alt"] = 0.0
-    assert driver.telemetry.flight_state() == "landed"
-    driver.link.state["last_heartbeat"] = 0.0
-    assert driver.telemetry.flight_state() == "disconnected"
+def test_flight_state_follows_a_whole_flight(driver):
+    state, link = driver.telemetry.flight_state, driver.link
+    assert state() == "ready"
+    link.state["armed"] = True
+    assert state() == "motors_on"
+    link.state["alt"] = 3.0
+    assert state() == "in_air"
+    driver.vehicle.is_returning = True
+    assert state() == "returning"
+    driver.vehicle.is_returning = False
+    link.state["alt"] = 0.0
+    assert state() == "landed"
+    link.state["armed"] = False
+    assert state() == "ready"           # motors off, that flight is over
+    link.state["last_heartbeat"] = 0.0
+    assert state() == "disconnected"
 
 
 # --- the manifest ---------------------------------------------------------

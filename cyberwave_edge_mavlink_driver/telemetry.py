@@ -62,9 +62,10 @@ class Telemetry:
     def flight_state(self):
         if self.vehicle is None:
             return "disconnected"
-        in_air = self.vehicle.in_air()
-        self.was_airborne = self.was_airborne or in_air
-        return contract.flight_state(self.link.connected(), self.vehicle.armed(), in_air,
+        armed, in_air = self.vehicle.armed(), self.vehicle.in_air()
+        # motors off ends the flight, so the next one starts from ready again
+        self.was_airborne = armed and (self.was_airborne or in_air)
+        return contract.flight_state(self.link.connected(), armed, in_air,
                                      self.vehicle.returning(), self.was_airborne)
 
     def position(self):
