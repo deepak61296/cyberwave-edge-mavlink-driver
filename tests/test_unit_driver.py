@@ -276,3 +276,18 @@ def test_flight_state_from_the_link(driver):
     assert driver.telemetry.flight_state() == "landed"
     driver.link.state["last_heartbeat"] = 0.0
     assert driver.telemetry.flight_state() == "disconnected"
+
+
+# --- the manifest ---------------------------------------------------------
+
+def test_manifest_lists_every_verb_offline():
+    manifest = MavlinkDriver.get_manifest(compiled=False)
+    supported = manifest["mqtt"]["commands"]["supported"]
+    names = [c["name"] if isinstance(c, dict) else c for c in supported]
+    for verb in ("arm", "disarm", "brake", "kill", "takeoff", "stop"):
+        assert verb in names
+    for verb in contract.CONTINUOUS:
+        entry = supported[names.index(verb)]
+        assert entry["continuous"] is True
+    assert set(manifest["mqtt"]["twin"]) == {"command", "telemetry", "position", "rotation"}
+    assert set(manifest["mqtt"]["joint"]) == {"update"}
