@@ -1,7 +1,7 @@
 # cyberwave-edge-mavlink-driver
 
-Connects any **MAVLink** autopilot — **ArduPilot** or **PX4**, SITL or real
-aircraft — to the [Cyberwave](https://cyberwave.com) platform as a live digital
+Connects any **MAVLink** autopilot, **ArduPilot** or **PX4**, SITL or real
+aircraft, to the [Cyberwave](https://cyberwave.com) platform as a live digital
 twin, speaking the same drone command contract as Cyberwave's DJI driver.
 
 ```
@@ -22,8 +22,8 @@ drone.flight.land(source_type="tele")
 
 Proven end-to-end against ArduCopter SITL 2026-08-21: takeoff to commanded
 altitude, velocity-square via continuous-command bursts with 500 ms dead-man
-braking, land, disarm — mirrored live in the Cyberwave 3D viewer at 10 Hz
-(position + attitude).
+braking, land, disarm. All of it mirrored live in the Cyberwave 3D viewer at
+10 Hz (position + attitude).
 
 ## Command contract
 
@@ -35,7 +35,7 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 | discrete | `takeoff` | GUIDED, arm, `NAV_TAKEOFF` | `AUTO.TAKEOFF` then arm, confirmed by the landed state |
 | discrete | `land`, `return_to_home` | LAND, RTL | `AUTO.LAND`, `AUTO.RTL` |
 | discrete | `brake`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
-| discrete | `stop` | zero the sticks | zero the sticks, then Hold |
+| discrete | `stop` (registered by the SDK base) | zero the sticks | zero the sticks, then Hold |
 | discrete | `kill` | force disarm, refused in the air without `force` | same |
 | discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused while armed) | same |
 | discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit | same; force arm is not possible over MAVLink |
@@ -93,7 +93,7 @@ Contract behaviors honored:
   driver zeroes the sticks (mirrors the DJI driver and PX4 offboard).
 - **`source_type` policy**: `tele` always executes; `sim_tele` only when
   `CYBERWAVE_ACCEPT_SIM_TELE=1` (default **off**, per the contract: "Only
-  source_type tele is executed on the aircraft" — export it for SITL rigs).
+  source_type tele is executed on the aircraft"; export it for SITL rigs).
   `edit`, `edge`, and untagged envelopes are dropped: stricter than the SDK's
   generic listener policy (which accepts `edit` and untagged), a deliberate
   choice for a flying vehicle.
@@ -154,7 +154,7 @@ snippet above.
 - [x] Arm / disarm from the SDK, with the FC's refusal reason returned
 - [ ] Battery/status telemetry topics
 - [ ] Gimbal commands (contract supports; needs a gimbal target)
-- [ ] Real flight controller (bench, props off, then flight — hard safety gates)
+- [ ] Real flight controller (bench, props off, then flight, hard safety gates)
 
 Scaffolded with [cyberwave-os/driver-skill](https://github.com/cyberwave-os/driver-skill).
 Apache 2.0.
