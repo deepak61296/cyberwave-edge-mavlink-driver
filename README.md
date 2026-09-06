@@ -25,6 +25,14 @@ altitude, velocity-square via continuous-command bursts with 500 ms dead-man
 braking, land, disarm. All of it mirrored live in the Cyberwave 3D viewer at
 10 Hz (position + attitude).
 
+## Contract
+
+The behaviour a driver behind a flying twin has to match is written down in
+[docs/CONTRACT.md](docs/CONTRACT.md), and [docs/DJI-MAPPING.md](docs/DJI-MAPPING.md)
+is how a DJI driver on the Mobile SDK v5 would meet it. `tools/conformance.py` in
+the project root is a conformance script that drives any drone twin through the
+vocabulary.
+
 ## Command contract
 
 Implements the standard Cyberwave drone vocabulary (as published on the
