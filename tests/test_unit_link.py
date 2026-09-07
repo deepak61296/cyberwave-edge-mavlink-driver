@@ -18,6 +18,7 @@ from cyberwave_edge_mavlink_driver.link import (  # noqa: E402
     MavlinkLink,
     enu_quaternion_from_ned_euler,
     is_vehicle_heartbeat,
+    pitch_yaw_from_quaternion,
 )
 
 ARM_HB = mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
@@ -182,6 +183,37 @@ def test_attitude_is_timestamped():
     link.pump_once()
     assert link.state["attitude"] == (0.1, 0.2, 0.3)
     assert time.time() - link.state["last_attitude"] < 1.0
+
+
+def gimbal_quaternion(pitch_deg, yaw_deg):
+    """The q GIMBAL_DEVICE_ATTITUDE_STATUS carries, for a roll-free gimbal."""
+    p, y = math.radians(pitch_deg) / 2, math.radians(yaw_deg) / 2
+    return [math.cos(p) * math.cos(y), -math.sin(p) * math.sin(y),
+            math.sin(p) * math.cos(y), math.cos(p) * math.sin(y)]
+
+
+def test_the_gimbal_angle_is_kept_like_the_attitude():
+    link = link_with(FakeMav([FakeMessage("GIMBAL_DEVICE_ATTITUDE_STATUS",
+                                          q=gimbal_quaternion(-45.0, 20.0))]))
+    assert link.pump_once() == "GIMBAL_DEVICE_ATTITUDE_STATUS"
+    pitch, yaw = link.state["gimbal"]
+    assert pitch == pytest.approx(-45.0, abs=0.01)
+    assert yaw == pytest.approx(20.0, abs=0.01)
+
+
+def test_an_older_mount_reports_centidegrees():
+    link = link_with(FakeMav([FakeMessage("MOUNT_STATUS", pointing_a=-3000,
+                                          pointing_b=0, pointing_c=1500)]))
+    link.pump_once()
+    assert link.state["gimbal"] == (-30.0, 15.0)
+
+
+def test_no_gimbal_no_angle():
+    assert MavlinkLink("test:none").state["gimbal"] is None
+
+
+def test_pitch_yaw_from_a_level_quaternion():
+    assert pitch_yaw_from_quaternion([1.0, 0.0, 0.0, 0.0]) == (0.0, 0.0)
 
 
 def statustext(text, chunk_seq=0):

@@ -19,6 +19,7 @@ from cyberwave_edge_mavlink_driver.ardupilot import ArduPilot  # noqa: E402
 from cyberwave_edge_mavlink_driver.link import MavlinkLink  # noqa: E402
 from cyberwave_edge_mavlink_driver.px4 import PX4  # noqa: E402
 from cyberwave_edge_mavlink_driver.vehicle import (  # noqa: E402
+    NAN,
     Refused,
     Vehicle,
     pick_vehicle,
@@ -26,6 +27,8 @@ from cyberwave_edge_mavlink_driver.vehicle import (  # noqa: E402
 
 ARM = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
 SET_MODE = mavutil.mavlink.MAV_CMD_DO_SET_MODE
+PITCHYAW = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW
+ACCEPTED = mavutil.mavlink.MAV_RESULT_ACCEPTED
 COPTER_MODES = mavutil.mode_mapping_byname(mavutil.mavlink.MAV_TYPE_QUADROTOR)
 
 
@@ -315,6 +318,81 @@ def test_a_vehicle_with_none_of_this_says_so(call):
 
 def test_a_vehicle_with_no_gimbal_has_no_angle_to_report():
     assert Vehicle(link_with()).gimbal_attitude() is None
+
+
+def accepting(link):
+    """An FC that takes whatever it is sent."""
+    return lambda *a: link.state["acks"].__setitem__(PITCHYAW, ACCEPTED)
+
+
+def test_ardupilot_points_the_gimbal_with_the_v2_command():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).gimbal_point(-45.0, 10.0, True)
+    sent = link.m.sent[-1]
+    assert sent[2] == PITCHYAW
+    assert sent[4:6] == (-45.0, 10.0)       # the angles
+    assert all(math.isnan(p) for p in sent[6:8])    # and no rates
+
+
+def test_ardupilot_leaves_an_axis_nobody_asked_for_alone():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).gimbal_point(-20.0, NAN, True)
+    assert link.m.sent[-1][4] == -20.0
+    assert math.isnan(link.m.sent[-1][5])
+
+
+def test_ardupilot_relative_adds_to_where_the_gimbal_is():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    link.state["gimbal"] = (-30.0, 5.0)
+    ArduPilot(link).gimbal_point(15.0, NAN, False)
+    assert link.m.sent[-1][4] == -15.0      # -30 + 15
+    assert math.isnan(link.m.sent[-1][5])   # yaw was not asked for, still is not
+
+
+def test_ardupilot_cannot_move_relative_to_a_gimbal_it_cannot_read():
+    link = link_with()
+    with pytest.raises(Refused, match="no gimbal attitude"):
+        ArduPilot(link).gimbal_point(15.0, NAN, False)
+    assert link.m.sent == []
+
+
+def test_ardupilot_takes_the_time_a_duration_asks_for():
+    """No such thing in the protocol: drive the rate, then land on the angle."""
+    link = link_with()
+    link.m._on_send = accepting(link)
+    link.state["gimbal"] = (0.0, 0.0)
+    ArduPilot(link).gimbal_point(-40.0, NAN, True, duration_s=0.2)
+    first, last = link.m.sent[0], link.m.sent[-1]
+    assert math.isnan(first[4]) and first[6] == -200.0   # 40 degrees in 0.2 s
+    assert last[4] == -40.0 and math.isnan(last[6])
+
+
+def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
+    """It is streamed from the tick, which may not block on anything."""
+    link = link_with()
+    t0 = time.time()
+    ArduPilot(link).gimbal_rate(-30.0, 0.0)
+    assert time.time() - t0 < 0.5
+    sent = link.m.sent[-1]
+    assert sent[2] == PITCHYAW
+    assert all(math.isnan(p) for p in sent[4:6])
+    assert sent[6:8] == (-30.0, 0.0)
+
+
+def test_ardupilot_gimbal_refusal_carries_the_fc_result():
+    link = link_with(lambda *a: link.state["acks"].__setitem__(
+        PITCHYAW, mavutil.mavlink.MAV_RESULT_UNSUPPORTED))
+    with pytest.raises(Refused, match="MAV_RESULT_UNSUPPORTED"):
+        ArduPilot(link).gimbal_point(0.0, 0.0, True)
+
+
+def test_ardupilot_reads_the_gimbal_angle_off_the_link():
+    link = link_with()
+    link.state["gimbal"] = (-12.5, 3.0)
+    assert ArduPilot(link).gimbal_attitude() == (-12.5, 3.0)
 
 
 # --- PX4 --------------------------------------------------------------

@@ -5,7 +5,7 @@ import time
 
 from pymavlink import mavutil
 
-from .vehicle import Vehicle
+from .vehicle import NAN, Refused, Vehicle
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,17 @@ ARM_RETRY_S = 30.0      # takeoff keeps asking this long; pre-arm can take a whi
 ARM_TRY_S = 3.0         # each ask waits this long for the armed bit
 AIRBORNE_S = 20.0       # how long the climb has to show after the ack
 AIRBORNE_ALT_M = 0.5    # off the ground, when the landed state says nothing
+MAX_SLEW_S = 30.0       # the longest a gimbal move may be asked to take
+
+
+def _add(base, delta):
+    """base + delta, leaving an axis nobody commanded uncommanded."""
+    return NAN if delta != delta else base + delta
+
+
+def _rate(here, there, seconds):
+    """deg/s that covers the gap in the time asked for."""
+    return NAN if there != there else (there - here) / seconds
 
 
 class ArduPilot(Vehicle):
@@ -98,3 +109,46 @@ class ArduPilot(Vehicle):
 
     def release_sticks(self):
         self.send_velocity_body(0, 0, 0, 0)
+
+    # -- camera ----------------------------------------------------------
+
+    def gimbal_attitude(self):
+        return self.link.state["gimbal"]
+
+    def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
+        if not absolute:
+            here = self.gimbal_attitude()
+            if here is None:
+                raise Refused("no gimbal attitude to move from")
+            pitch_deg, yaw_deg = _add(here[0], pitch_deg), _add(here[1], yaw_deg)
+        if duration_s and duration_s > 0:
+            return self._slew(pitch_deg, yaw_deg, min(duration_s, MAX_SLEW_S))
+        self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
+
+    def _slew(self, pitch_deg, yaw_deg, seconds):
+        """A move that takes the time it was asked to take.
+
+        The gimbal protocol has no such thing, so this drives the rate that
+        covers the gap and then lands on the angle exactly.
+        """
+        here = self.gimbal_attitude()
+        if here is None:
+            return self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
+        self._pitchyaw(NAN, NAN, _rate(here[0], pitch_deg, seconds),
+                       _rate(here[1], yaw_deg, seconds))
+        self.abort.wait(seconds)
+        self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
+
+    def gimbal_rate(self, pitch_dps, yaw_dps):
+        # streamed from the tick, so it sends and does not wait for the ack
+        self.link.send_command(mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
+                               NAN, NAN, pitch_dps, yaw_dps, 0, 0, 0)
+
+    def _pitchyaw(self, pitch_deg, yaw_deg, pitch_dps, yaw_dps):
+        """The gimbal protocol v2 verb. NaN in any of the four leaves that
+        axis where it is; the mount takes the angles or the rates, not both."""
+        ok, reason = self._acked(
+            mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
+            pitch_deg, yaw_deg, pitch_dps, yaw_dps, 0, 0, 0)
+        if not ok:
+            raise Refused(reason)
