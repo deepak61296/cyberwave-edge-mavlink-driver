@@ -3,6 +3,7 @@ autopilot that differ. No aircraft, no broker, no network."""
 
 import math
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -13,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import mavutil  # noqa: E402
 
-from cyberwave_edge_mavlink_driver import px4  # noqa: E402
+from cyberwave_edge_mavlink_driver import ardupilot, px4  # noqa: E402
 from cyberwave_edge_mavlink_driver.ardupilot import ArduPilot  # noqa: E402
 from cyberwave_edge_mavlink_driver.link import MavlinkLink  # noqa: E402
 from cyberwave_edge_mavlink_driver.px4 import PX4  # noqa: E402
@@ -29,8 +30,9 @@ class FakeMav:
 
     def __init__(self, on_send=None):
         self.target_system, self.target_component = 1, 1
+        # what pymavlink noted from the heartbeat of the system we accepted
+        self.sysid_state = {1: types.SimpleNamespace(mav_type=mavutil.mavlink.MAV_TYPE_QUADROTOR)}
         self.sent = []
-        self.modes_asked = []
         self.params = {}
         self._on_send = on_send
         self.mav = types.SimpleNamespace(
@@ -44,12 +46,6 @@ class FakeMav:
         self.sent.append(args)
         if self._on_send is not None:
             self._on_send(*args)
-
-    def mode_mapping(self):
-        return COPTER_MODES
-
-    def set_mode(self, name):
-        self.modes_asked.append(name)
 
     def commands(self):
         return [s[2] for s in self.sent if s[0] not in ("vel", "hb")]
@@ -130,7 +126,7 @@ def test_reboot_is_refused_while_armed():
     link.state["armed"] = True
     ok, reason = Vehicle(link).reboot()
     assert ok is False
-    assert reason == "refused: the aircraft is armed"
+    assert reason == "motors running"
     assert link.m.sent == []
 
 
@@ -151,6 +147,17 @@ def test_in_air_prefers_the_landed_state_over_altitude():
     assert not v.in_air()
 
 
+def test_a_wait_gives_way_to_abort():
+    v = Vehicle(link_with())
+    v.abort.set()
+    t0 = time.time()
+    assert v._wait(lambda: False, 5.0) is False
+    assert v._wait(lambda: True, 5.0) is True      # what already holds still counts
+    ok, reason = v.set_armed(True, timeout=5.0)
+    assert not ok
+    assert time.time() - t0 < 0.5
+
+
 # --- ArduPilot --------------------------------------------------------
 
 def test_ardupilot_mode_name_comes_from_the_heartbeat():
@@ -159,30 +166,44 @@ def test_ardupilot_mode_name_comes_from_the_heartbeat():
     assert ArduPilot(link).mode_name() == "GUIDED"
 
 
+def test_ardupilot_mode_change_is_a_do_set_mode_to_the_accepted_system():
+    link = link_with(lambda *a: link.state.__setitem__("mode", int(a[5])))
+    assert ArduPilot(link).set_mode("GUIDED", timeout=0.5) == (True, "")
+    assert link.m.sent == [(1, 1, SET_MODE, 0, mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                            COPTER_MODES["GUIDED"], 0.0, 0.0, 0.0, 0.0, 0.0)]
+
+
+def test_ardupilot_mode_table_follows_the_accepted_system():
+    """pymavlink's own table follows whichever heartbeat it saw first."""
+    link = link_with()
+    link.m.sysid_state[1].mav_type = mavutil.mavlink.MAV_TYPE_GROUND_ROVER
+    v = ArduPilot(link)
+    assert "BRAKE" not in v.modes
+    link.state["mode"] = mavutil.mode_mapping_byname(mavutil.mavlink.MAV_TYPE_GROUND_ROVER)["GUIDED"]
+    assert v.mode_name() == "GUIDED"
+
+
 def test_ardupilot_arms_out_of_land_via_guided():
     """LAND is not armable, so an arm request switches to GUIDED first."""
     link = link_with()
     link.state["mode"] = COPTER_MODES["LAND"]
-    v = ArduPilot(link)
 
-    def become(name):
-        link.m.modes_asked.append(name)
-        link.state["mode"] = COPTER_MODES[name]
-    link.m.set_mode = become
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = True
+    link.m._on_send = autopilot
 
-    def arm(*a):
-        link.state["armed"] = True
-    link.m._on_send = arm
-
-    assert v.set_armed(True, timeout=0.5) == (True, "")
-    assert link.m.modes_asked == ["GUIDED"]
+    assert ArduPilot(link).set_armed(True, timeout=0.5) == (True, "")
+    assert link.m.commands() == [SET_MODE, ARM]
+    assert link.m.sent[0][5] == COPTER_MODES["GUIDED"]
 
 
 def test_ardupilot_mode_refusal_returns_the_fc_words():
     """A mode the vehicle will not take is refused on the text channel."""
-    link = link_with()
-    link.m.set_mode = lambda name: link._texts.append(
-        (time.time(), "Flight mode change failed"))
+    link = link_with(lambda *a: link._texts.append(
+        (time.time(), "Flight mode change failed")))
     ok, reason = ArduPilot(link).set_mode("BRAKE", timeout=0.3)
     assert ok is False
     assert reason == "Flight mode change failed"
@@ -195,10 +216,34 @@ def test_ardupilot_mode_refusal_without_words_says_what_it_waited_for():
     assert reason.startswith("could not enter BRAKE within")
 
 
+def test_ardupilot_takeoff_is_guided_then_arm_then_nav_takeoff(monkeypatch):
+    monkeypatch.setattr(ardupilot, "ARM_TRY_S", 0.2)
+    monkeypatch.setattr(ardupilot, "ARM_RETRY_S", 2.0)
+    asked = []
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            asked.append(cmd)
+            if len(asked) == 1:     # pre-arm refuses the first ask with words, no bit
+                link._texts.append((time.time(), "PreArm: waiting for EKF"))
+            else:
+                link.state["armed"] = True
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+
+    link = link_with(autopilot)
+    assert ArduPilot(link).takeoff(3.0) == (True, "")
+    assert link.m.commands() == [SET_MODE, ARM, ARM, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF]
+    assert link.m.sent[0][5] == COPTER_MODES["GUIDED"]
+    assert link.m.sent[-1][10] == 3.0                # NAV_TAKEOFF param7 is the altitude
+
+
 def test_ardupilot_hold_on_the_ground_does_nothing():
     link = link_with()
     assert ArduPilot(link).hold() == (True, "")
-    assert link.m.modes_asked == []
+    assert link.m.sent == []
 
 
 def test_ardupilot_release_is_one_zero_setpoint():
@@ -234,7 +279,7 @@ def test_px4_takeoff_sets_the_mode_before_arming():
     assert all(math.isnan(p) for p in link.m.sent[0][7:])   # unused params are NaN
 
 
-def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state():
+def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state(monkeypatch):
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:
             link.state["mode"] = px4.custom_mode(int(p2), int(p3))
@@ -243,11 +288,8 @@ def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state():
             link.state["landed"] = "in_air"   # PX4 says this from 0 m up
 
     link = link_with(autopilot)
-    px4.TAKEOFF_CONFIRM_S, keep = 0.5, px4.TAKEOFF_CONFIRM_S
-    try:
-        ok, reason = PX4(link).takeoff(3.0)
-    finally:
-        px4.TAKEOFF_CONFIRM_S = keep
+    monkeypatch.setattr(px4, "TAKEOFF_CONFIRM_S", 0.5)
+    ok, reason = PX4(link).takeoff(3.0)
     assert not ok
     assert "still climbing" in reason
 
@@ -280,6 +322,30 @@ def test_ardupilot_never_heartbeats():
     assert link.m.sent == []
 
 
+def test_px4_prepare_streams_zeros_then_asks_for_offboard():
+    """OFFBOARD only engages with a setpoint stream already running."""
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = px4.custom_mode(int(p2), int(p3))
+
+    link = link_with(autopilot)
+    link.state["armed"] = True
+    PX4(link).prepare_sticks()
+    assert [s[0] for s in link.m.sent[:5]] == ["vel"] * 5
+    assert link.m.commands() == [SET_MODE]
+    assert link.state["mode"] == px4.custom_mode(px4.MAIN["OFFBOARD"])
+
+
+def test_px4_prepare_does_nothing_disarmed_or_already_offboard():
+    link = link_with()
+    PX4(link).prepare_sticks()
+    assert link.m.sent == []
+    link.state["armed"] = True
+    link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
+    PX4(link).prepare_sticks()
+    assert link.m.sent == []
+
+
 def test_px4_release_leaves_offboard_for_hold():
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:
@@ -289,6 +355,24 @@ def test_px4_release_leaves_offboard_for_hold():
     link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
     PX4(link).release_sticks()
     assert link.m.sent[0][0] == "vel"
+    assert link.state["mode"] == px4.custom_mode(4, 3)
+
+
+def test_px4_release_keeps_the_zeros_flowing_until_hold_shows():
+    """The offboard-loss failsafe fires a second after the stream stops."""
+    link = link_with()
+    link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
+
+    def hold_later():
+        time.sleep(0.3)
+        link.state["mode"] = px4.custom_mode(4, 3)
+    threading.Thread(target=hold_later).start()
+
+    PX4(link).release_sticks()
+    assert link.m.commands() == [SET_MODE]
+    zeros = [s for s in link.m.sent if s[0] == "vel"]
+    assert len(zeros) >= 4                      # kept up while Hold was pending
+    assert link.m.sent[-1][0] == "vel"          # and outlived the mode ask
     assert link.state["mode"] == px4.custom_mode(4, 3)
 
 

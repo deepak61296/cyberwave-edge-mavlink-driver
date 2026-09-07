@@ -1,6 +1,7 @@
 """What every autopilot can do. Each verb returns (ok, reason)."""
 
 import logging
+import threading
 import time
 
 from pymavlink import mavutil
@@ -28,6 +29,8 @@ class Vehicle:
 
     def __init__(self, link):
         self.link = link
+        # kill, brake, emergency_stop and stop set this; every wait gives way to it
+        self.abort = threading.Event()
 
     def armed(self):
         return bool(self.link.state["armed"])
@@ -52,10 +55,8 @@ class Vehicle:
         self.link.send_command(cmd, 1 if arm else 0, p2)
         logger.info("%s sent (force=%s)", word, force)
 
-        while time.time() < t0 + timeout:
-            if self.link.state["armed"] == arm:
-                return True, ""
-            time.sleep(0.05)
+        if self._wait(lambda: self.link.state["armed"] == arm, timeout):
+            return True, ""
 
         texts = self.link.texts_since(t0)
         texts = [t for t in texts if t.lower().startswith(("arm", "prearm"))] or texts
@@ -79,7 +80,7 @@ class Vehicle:
 
     def reboot(self):
         if self.armed():
-            return False, "refused: the aircraft is armed"
+            return False, "motors running"
         return self._acked(mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 1)
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
@@ -88,15 +89,50 @@ class Vehicle:
     def tick(self):
         """Called every driver tick. Nothing to keep up by default."""
 
+    def _wait(self, predicate, timeout, meanwhile=None):
+        """Poll predicate until it holds, the timeout passes or abort is set.
+
+        meanwhile, if given, runs on every poll: for a stream that must not
+        stop while we wait.
+        """
+        end = time.time() + timeout
+        while True:
+            if predicate():
+                return True
+            if meanwhile is not None:
+                meanwhile()
+            if time.time() >= end or self.abort.wait(0.05):
+                return False
+
     def _acked(self, cmd, *params, timeout=5.0):
         """Send one command and turn its ack into (ok, reason)."""
         self.link.send_command(cmd, *params)
-        result = self.link.wait_ack(cmd, timeout)
+        acks = self.link.state["acks"]
+        if not self._wait(lambda: cmd in acks, timeout):
+            return False, f"no COMMAND_ACK within {timeout:.1f}s"
+        result = acks.pop(cmd)
         if result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
             return True, ""
-        if result is None:
-            return False, f"no COMMAND_ACK within {timeout:.1f}s"
         return False, result_name(result)
+
+    def _set_mode(self, name, want, params, timeout, fill=0.0, meanwhile=None):
+        """DO_SET_MODE(*params) once a second until the heartbeat reads want."""
+        t0 = time.time()
+
+        def in_mode():
+            return self.link.state["mode"] == want
+
+        while not in_mode():
+            if self.abort.is_set() or time.time() > t0 + timeout:
+                # the autopilot usually says why on the text channel; prefer its words
+                why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
+                logger.error("could not enter %s: %s", name, why)
+                return False, why or f"could not enter {name} within {timeout:.0f}s"
+            self.link.send_command(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                                   mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                                   *params, fill=fill)
+            self._wait(in_mode, min(1.0, t0 + timeout - time.time()), meanwhile)
+        return True, ""
 
     # -- per autopilot ---------------------------------------------------
 

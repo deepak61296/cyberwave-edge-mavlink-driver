@@ -9,12 +9,14 @@ import types
 from pathlib import Path
 
 import pytest
+from cyberwave.driver import DriverOperationMode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cyberwave_edge_mavlink_driver import contract  # noqa: E402
 from cyberwave_edge_mavlink_driver.driver import MavlinkDriver  # noqa: E402
 from cyberwave_edge_mavlink_driver.telemetry import PROP_JOINTS, PropSpin  # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import Vehicle  # noqa: E402
 
 
 class FakeMQ:
@@ -30,23 +32,19 @@ class FakeMQ:
         pass
 
 
-class FakeVehicle:
+class FakeVehicle(Vehicle):
+    """Records the verbs; armed and in_air are the real ones."""
+
     name = "fake"
 
     def __init__(self, link):
-        self.link = link
+        super().__init__(link)
         self.calls = []
         self.result = (True, "")
         self.is_returning = False
 
-    def armed(self):
-        return bool(self.link.state["armed"])
-
     def mode_name(self):
         return "STABILIZE"
-
-    def in_air(self):
-        return self.link.state["alt"] > 0.5
 
     def returning(self):
         return self.is_returning
@@ -58,6 +56,18 @@ class FakeVehicle:
 
     def kill(self):
         self.calls.append(("kill",))
+        return self.result
+
+    def takeoff(self, altitude):
+        self.calls.append(("takeoff", altitude))
+        return self.result
+
+    def land(self):
+        self.calls.append(("land",))
+        return self.result
+
+    def return_to_home(self):
+        self.calls.append(("return_to_home",))
         return self.result
 
     def hold(self):
@@ -80,9 +90,6 @@ class FakeVehicle:
 
     def send_velocity_body(self, *a):
         self.calls.append(("velocity", a))
-
-    def tick(self):
-        pass
 
 
 @pytest.fixture
@@ -137,6 +144,7 @@ def test_arm_command_parsed_and_answered(driver):
     ("kill", {}, ("kill",)),
     ("emergency_stop", {}, ("hold",)),
     ("brake", {}, ("hold",)),
+    ("hover", {}, ("hold",)),
     ("cancel_landing", {}, ("hold",)),
     ("set_home_here", {}, ("set_home_here",)),
     ("reboot", {}, ("reboot",)),
@@ -146,13 +154,34 @@ def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     assert driver.vehicle.calls[-1] == expected
 
 
+def test_takeoff_in_the_air_is_refused_before_the_backend_runs(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "takeoff", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "already in air"
+    assert driver.vehicle.calls == []
+
+
 def test_kill_in_the_air_needs_force(driver):
     driver.link.state["armed"] = True
     driver.link.state["alt"] = 3.0
     reply = send(driver, {"source_type": "tele", "command": "kill", "data": {}})
     assert reply["status"] == "error"
-    assert reply["reason"] == "refused: in the air, send force to cut the motors anyway"
+    assert reply["reason"] == "in air, send force to override"
     assert driver.vehicle.calls == []
+
+
+def test_disarm_in_the_air_needs_force(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "disarm", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "in air, send force to override"
+    assert driver.vehicle.calls == []
+    reply = send(driver, {"source_type": "tele", "command": "disarm", "data": {"force": True}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("set_armed", False, True)]
 
 
 def test_kill_in_the_air_with_force_cuts_the_motors(driver):
@@ -196,6 +225,17 @@ def test_commands_are_refused_while_the_link_is_rebuilt(driver):
     assert driver.vehicle.calls == []
 
 
+def test_every_verb_is_refused_without_a_heartbeat(driver):
+    driver.link.state["last_heartbeat"] = 0.0
+    for cmd in ("arm", "takeoff", "kill", "brake"):
+        reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+        assert reply["status"] == "error"
+        assert reply["reason"] == "not connected"
+    assert driver.vehicle.calls == []
+    reply = send(driver, {"source_type": "tele", "command": "stop", "data": {}})
+    assert reply["status"] == "ok"              # the contract's one exception
+
+
 def test_unknown_command_is_answered_not_dropped(driver):
     reply = send(driver, {"source_type": "tele", "command": "calibrate_compass", "data": {}})
     assert reply["status"] == "error"
@@ -227,6 +267,72 @@ def test_discrete_command_releases_the_sticks_first(driver):
     send(driver, {"source_type": "tele", "command": "land", "data": {}})
     assert driver._stick is None
     assert driver.vehicle.calls[0] == ("release",)
+
+
+@pytest.mark.parametrize("urgent", contract.URGENT)
+def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
+    """A kill must not queue behind a takeoff that waits half a minute."""
+    v, in_takeoff = driver.vehicle, threading.Event()
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 30.0)
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+    t.start()
+    assert in_takeoff.wait(5.0)
+    t0 = time.time()
+    reply = send(driver, {"source_type": "tele", "command": urgent, "data": {}})
+    assert time.time() - t0 < 1.0
+    assert reply["command"] == urgent
+    assert reply["status"] == "ok"
+    t.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["takeoff"]["reason"] == "superseded"
+
+
+def test_stop_does_not_cancel_a_running_verb(driver):
+    """Every SDK burst ends with a stop; a land sent during one must survive."""
+    v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
+
+    def land():
+        in_land.set()
+        finish.wait(5.0)
+        return True, ""
+    v.land = land
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    assert in_land.wait(5.0)
+    stop = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "stop", "data": {}}))
+    stop.start()
+    time.sleep(0.2)
+    assert not v.abort.is_set()     # the land keeps the aircraft
+    finish.set()
+    t.join(5.0)
+    stop.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["land"]["status"] == "ok"
+    assert by_verb["land"]["reason"] == ""
+    assert by_verb["stop"]["status"] == "ok"
+
+
+def test_stop_releases_the_sticks_and_replies_leaving_the_base_alone(driver):
+    """The base would drop to NO_OP and rewire every subscription per burst."""
+    driver._operation_mode = DriverOperationMode.TELEOP_REMOTE
+    driver._stick, driver._stick_at, driver._sticks_live = (1, 0, 0, 0), time.time(), True
+    asyncio.run(driver._on_stop_cmd({"source_type": "tele", "command": "stop", "data": {}}))
+    reply = driver.client.mqtt.replies[-1]
+    assert reply["command"] == "stop"
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("release",)]
+    assert driver._stick is None
+    assert driver._operation_mode is DriverOperationMode.TELEOP_REMOTE
 
 
 # --- sticks -------------------------------------------------------------
@@ -271,6 +377,55 @@ def test_the_tick_keeps_streaming_through_the_mode_change(driver):
     asyncio.run(driver.on_tick())   # would block if prepare ran on the tick
     finish.set()
     assert driver.vehicle.calls.count(("velocity", (1.0, 0, 0, 0))) == 2
+
+
+def test_sticks_are_dropped_while_a_verb_runs(driver):
+    """A burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it."""
+    v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
+
+    def land():
+        in_land.set()
+        finish.wait(5.0)
+        return True, ""
+    v.land = land
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    assert in_land.wait(5.0)
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    assert driver._stick is None
+    driver._stick, driver._stick_at = (1.0, 0, 0, 0), time.time()   # slipped in before
+    asyncio.run(driver.on_tick())
+    assert ("velocity", (1.0, 0, 0, 0)) not in v.calls
+    finish.set()
+    t.join(5.0)
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    assert driver._stick == (1.0, 0, 0, 0)      # taken again once the verb is done
+
+
+def test_a_verb_during_prepare_waits_for_it(driver):
+    """Two threads changing modes at once fight over the aircraft."""
+    in_prepare, finish = threading.Event(), threading.Event()
+
+    def prepare():
+        in_prepare.set()
+        finish.wait(5.0)
+        driver.vehicle.calls.append(("prepare",))
+    driver.vehicle.prepare_sticks = prepare
+
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    asyncio.run(driver.on_tick())
+    assert in_prepare.wait(5.0)
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    time.sleep(0.2)
+    assert ("release",) not in driver.vehicle.calls    # land waits for prepare to end
+    finish.set()
+    t.join(5.0)
+    calls = driver.vehicle.calls
+    assert calls.index(("prepare",)) < calls.index(("release",)) < calls.index(("land",))
 
 
 def test_stick_expiry_releases_once(driver):
@@ -384,7 +539,7 @@ def test_manifest_lists_every_verb_offline():
     manifest = MavlinkDriver.get_manifest(compiled=False)
     supported = manifest["mqtt"]["commands"]["supported"]
     names = [c["name"] if isinstance(c, dict) else c for c in supported]
-    for verb in ("arm", "disarm", "brake", "kill", "takeoff", "stop"):
+    for verb in ("arm", "disarm", "brake", "hover", "kill", "takeoff", "stop"):
         assert verb in names
     for verb in contract.CONTINUOUS:
         entry = supported[names.index(verb)]

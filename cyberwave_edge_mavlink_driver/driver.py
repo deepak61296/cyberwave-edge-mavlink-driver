@@ -55,8 +55,9 @@ class MavlinkDriver(BaseDriver):
         self.telemetry = Telemetry(self.link)
         # Only tele flies the aircraft. sim_tele is opt-in for SITL rigs.
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
-        self._lock = threading.Lock()   # discrete commands run one at a time
-        self._mode_lock = threading.Lock()   # one stick mode change at a time
+        # one thing at a time changes the aircraft's mode: a verb or the sticks
+        self._lock = threading.Lock()
+        self._running = None            # the discrete verb that has the aircraft
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0
         self._sticks_live = False
@@ -154,6 +155,18 @@ class MavlinkDriver(BaseDriver):
     async def on_tick(self):
         now = time.time()
         self.vehicle.tick()
+        if not self._running:   # a discrete verb has the aircraft until it is done
+            self._tick_sticks(now)
+        # a cold-booted autopilot can miss the first stream request
+        if now - self.link.state["last_attitude"] > STREAM_RETRY_S \
+                and now - self._streams_at > STREAM_RETRY_S:
+            self._streams_at = now
+            self.link.request_streams()
+        if not self.client.mqtt.connected:
+            self._connection_lost.set()
+
+    def _tick_sticks(self, now):
+        """Stream a fresh stick; release once it has expired."""
         stick = self._stick
         if stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
             self.vehicle.send_velocity_body(*stick)
@@ -165,13 +178,6 @@ class MavlinkDriver(BaseDriver):
             self._stick = None
             self._off_tick(self.vehicle.release_sticks)
             logger.info("sticks released")
-        # a cold-booted autopilot can miss the first stream request
-        if now - self.link.state["last_attitude"] > STREAM_RETRY_S \
-                and now - self._streams_at > STREAM_RETRY_S:
-            self._streams_at = now
-            self.link.request_streams()
-        if not self.client.mqtt.connected:
-            self._connection_lost.set()
 
     # -- commands --------------------------------------------------------
 
@@ -189,6 +195,12 @@ class MavlinkDriver(BaseDriver):
     def _on_stick(self, envelope):
         if not self._accepts(envelope):
             return
+        if self._running:
+            # a burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it
+            if not self._dropped:
+                self._dropped = True
+                logger.info("sticks dropped while %s runs", self._running)
+            return
         data = envelope.get("data") or {}
         # magnitude rides in the payload, direction comes from the name
         speed = abs(float(data.get("linear_x", data.get("speed", contract.DEFAULT_SPEED))))
@@ -198,10 +210,11 @@ class MavlinkDriver(BaseDriver):
         self._stick_at = time.time()
 
     async def _on_stop_cmd(self, envelope):
-        if self._accepts(envelope):
-            await asyncio.to_thread(self._release_sticks)
-            self._reply("stop", True, "")
-        await super()._on_stop_cmd(envelope)
+        # Not super(): the base answers stop by dropping to NO_OP, which
+        # unwires and rewires every subscription. The SDK ends each burst
+        # with a stop, and a burst chained straight after could lose
+        # envelopes in that gap. Here stop means release the sticks and reply.
+        await self._on_command(envelope)
 
     def _off_tick(self, work):
         """Run a stick mode change away from the tick.
@@ -211,7 +224,7 @@ class MavlinkDriver(BaseDriver):
         every publisher, so the twin's pose freezes mid-manoeuvre.
         """
         def run():
-            with self._mode_lock:
+            with self._lock:
                 try:
                     work()
                 except Exception:
@@ -228,23 +241,43 @@ class MavlinkDriver(BaseDriver):
 
     def _run(self, envelope):
         cmd, data = envelope.get("command"), envelope.get("data") or {}
+        if cmd in contract.URGENT:
+            self.vehicle.abort.set()    # whatever is running gives way
         with self._lock:
+            if cmd in contract.URGENT:
+                self.vehicle.abort.clear()
+            elif self.vehicle.abort.is_set():
+                # an urgent verb is queued behind us; do not make it wait.
+                # it releases the sticks itself, so stop still gets its ok.
+                self._reply(cmd, cmd == "stop", "" if cmd == "stop" else "superseded")
+                return
             logger.info("executing %s %s", cmd, data or "")
-            # the contract: a discrete command shuts stick input down first
-            self._release_sticks()
+            # no handle or no heartbeat: a verb would only wait out its ack.
+            # stop is the one verb the contract never refuses.
+            if cmd != "stop" and not (self.link.ready() and self.link.connected()):
+                self._reply(cmd, False, "not connected")
+                return
+            self._running, self._dropped = cmd, False
             try:
+                # the contract: a discrete command shuts stick input down first
+                self._release_sticks()
                 ok, reason = self._execute(cmd, data)
             except Exception as exc:
                 logger.exception("command %s failed", cmd)
                 ok, reason = False, f"{type(exc).__name__}: {exc}"
+            finally:
+                self._running = None
+            if not ok and self.vehicle.abort.is_set():
+                reason = "superseded"
             self._reply(cmd, ok, reason)
 
     def _execute(self, cmd, data):
-        # while the link is being rebuilt a verb would only wait out its ack
-        if not self.link.ready():
-            return False, "not connected"
         v = self.vehicle
+        if cmd == "stop":
+            return True, ""     # the sticks are already released; that is all stop asks
         if cmd == "takeoff":
+            if v.in_air():
+                return False, "already in air"
             return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))
         if cmd == "land":
             return v.land()
@@ -252,15 +285,15 @@ class MavlinkDriver(BaseDriver):
             return v.return_to_home()
         # emergency_stop hovers: the same script must be safe on every
         # aircraft, and kill is the verb that says it cuts the motors
-        if cmd in ("brake", "emergency_stop", "cancel_takeoff",
+        if cmd in ("brake", "hover", "emergency_stop", "cancel_takeoff",
                    "cancel_landing", "cancel_return_to_home"):
             return v.hold()
+        if cmd in ("disarm", "kill") and v.in_air() and not data.get("force", False):
+            # motors off in flight drops the aircraft, so it takes a second word
+            return False, "in air, send force to override"
         if cmd in ("arm", "disarm"):
             return v.set_armed(cmd == "arm", force=bool(data.get("force", False)))
         if cmd == "kill":
-            # cutting the motors in flight drops the aircraft, so say it out loud
-            if v.in_air() and not data.get("force", False):
-                return False, "refused: in the air, send force to cut the motors anyway"
             return v.kill()
         if cmd == "set_home_here":
             return v.set_home_here()

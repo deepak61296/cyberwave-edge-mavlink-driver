@@ -178,10 +178,6 @@ class MavlinkLink:
         """True when there is a handle we are allowed to send on."""
         return self.m is not None
 
-    def mode_names(self):
-        """The autopilot's mode table, empty while the link is being rebuilt."""
-        return (self.m.mode_mapping() or {}) if self.ready() else {}
-
     def close(self):
         # unusable first: a send into the gap would be addressed to everyone
         m, self.m = self.m, None

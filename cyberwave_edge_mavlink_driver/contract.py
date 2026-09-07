@@ -6,7 +6,13 @@ DISCRETE = (
     "cancel_takeoff", "cancel_landing", "cancel_return_to_home",
     "emergency_stop", "set_home_here", "reboot",
     "arm", "disarm", "brake", "kill",
+    "hover",    # what the SDK's flight handle sends; another name for brake
 )
+
+# These do not queue: whatever discrete verb is running gives way to them.
+# stop is not one of them. The SDK ends every stick burst with a stop, so a
+# verb sent during a burst would be cancelled by the burst's own tail.
+URGENT = ("kill", "brake", "emergency_stop")
 
 # Stick commands: name -> body frame (vx, vy, vz, yaw_rate) unit vector.
 # The body frame is NED, so +z is down.
