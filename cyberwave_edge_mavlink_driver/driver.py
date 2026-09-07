@@ -301,7 +301,8 @@ class MavlinkDriver(BaseDriver):
             return v.set_home_here()
         if cmd == "reboot":
             return v.reboot()
-        return False, f"command {cmd!r} not implemented"
+        logger.warning("no handler for %s", cmd)
+        return False, "not supported on this vehicle"
 
     def _reply(self, cmd, ok, reason):
         """Answer on the command topic. status is the contract's field."""

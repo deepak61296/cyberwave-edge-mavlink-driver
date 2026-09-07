@@ -263,7 +263,7 @@ def test_every_verb_is_refused_without_a_heartbeat(driver):
 def test_unknown_command_is_answered_not_dropped(driver):
     reply = send(driver, {"source_type": "tele", "command": "calibrate_compass", "data": {}})
     assert reply["status"] == "error"
-    assert "not implemented" in reply["reason"]
+    assert reply["reason"] == "not supported on this vehicle"
 
 
 def test_sim_tele_arm_is_dropped(driver):
