@@ -71,7 +71,7 @@ class PX4(Vehicle):
     def returning(self):
         return self.link.state["mode"] == custom_mode(AUTO, AUTO_SUB["RTL"])
 
-    def set_mode(self, main, sub=0, timeout=10.0):
+    def set_mode(self, main, sub=0, timeout=10.0, meanwhile=None):
         """DO_SET_MODE once a second until the heartbeat shows it."""
         want = custom_mode(main, sub)
         t0 = time.time()
@@ -86,7 +86,7 @@ class PX4(Vehicle):
                 return False, why or f"could not enter {mode_name(want)} within {timeout:.0f}s"
             self.link.send_command(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
                                    1, main, sub, fill=NAN)
-            self._wait(in_mode, min(1.0, t0 + timeout - time.time()))
+            self._wait(in_mode, min(1.0, t0 + timeout - time.time()), meanwhile)
         return True, ""
 
     def set_armed(self, arm, force=False, timeout=5.0):
@@ -139,7 +139,14 @@ class PX4(Vehicle):
         self.set_mode(MAIN["OFFBOARD"], timeout=3.0)
 
     def release_sticks(self):
-        self.send_velocity_body(0, 0, 0, 0)
-        # OFFBOARD fails over a second after the stream stops; leave it on our terms
+        """Leave OFFBOARD for Hold with the zeros still flowing.
+
+        PX4 fails over a second after the setpoint stream stops, and on the
+        bench that ended in an RTL nobody asked for; the stream must outlive
+        the mode change.
+        """
+        def zero():
+            self.send_velocity_body(0, 0, 0, 0)
+        zero()
         if self.link.state["mode"] == custom_mode(MAIN["OFFBOARD"]):
-            self.hold()
+            self.set_mode(AUTO, AUTO_SUB["LOITER"], timeout=3.0, meanwhile=zero)

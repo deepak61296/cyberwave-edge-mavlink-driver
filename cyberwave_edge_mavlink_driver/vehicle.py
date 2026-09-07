@@ -89,12 +89,18 @@ class Vehicle:
     def tick(self):
         """Called every driver tick. Nothing to keep up by default."""
 
-    def _wait(self, predicate, timeout):
-        """Poll predicate until it holds, the timeout passes or abort is set."""
+    def _wait(self, predicate, timeout, meanwhile=None):
+        """Poll predicate until it holds, the timeout passes or abort is set.
+
+        meanwhile, if given, runs on every poll: for a stream that must not
+        stop while we wait.
+        """
         end = time.time() + timeout
         while True:
             if predicate():
                 return True
+            if meanwhile is not None:
+                meanwhile()
             if time.time() >= end or self.abort.wait(0.05):
                 return False
 

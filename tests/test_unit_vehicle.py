@@ -3,6 +3,7 @@ autopilot that differ. No aircraft, no broker, no network."""
 
 import math
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -300,6 +301,24 @@ def test_px4_release_leaves_offboard_for_hold():
     link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
     PX4(link).release_sticks()
     assert link.m.sent[0][0] == "vel"
+    assert link.state["mode"] == px4.custom_mode(4, 3)
+
+
+def test_px4_release_keeps_the_zeros_flowing_until_hold_shows():
+    """The offboard-loss failsafe fires a second after the stream stops."""
+    link = link_with()
+    link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
+
+    def hold_later():
+        time.sleep(0.3)
+        link.state["mode"] = px4.custom_mode(4, 3)
+    threading.Thread(target=hold_later).start()
+
+    PX4(link).release_sticks()
+    assert link.m.commands() == [SET_MODE]
+    zeros = [s for s in link.m.sent if s[0] == "vel"]
+    assert len(zeros) >= 4                      # kept up while Hold was pending
+    assert link.m.sent[-1][0] == "vel"          # and outlived the mode ask
     assert link.state["mode"] == px4.custom_mode(4, 3)
 
 
