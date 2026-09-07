@@ -273,6 +273,13 @@ def test_px4_release_leaves_offboard_for_hold():
     assert link.state["mode"] == px4.custom_mode(4, 3)
 
 
+def test_px4_setpoints_use_body_ned():
+    # frame 9 comes back as "coordinate frame 9 unsupported" and is dropped
+    link = link_with()
+    PX4(link).send_velocity_body(1.0, 0, 0, 0)
+    assert link.m.sent[0][4] == mavutil.mavlink.MAV_FRAME_BODY_NED
+
+
 # --- picking the backend ----------------------------------------------
 
 @pytest.mark.parametrize("autopilot, cls", [

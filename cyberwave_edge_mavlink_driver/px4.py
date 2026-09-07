@@ -11,6 +11,7 @@ import time
 
 from pymavlink import mavutil
 
+from .link import BODY_NED
 from .vehicle import Vehicle
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,9 @@ def mode_name(custom):
 class PX4(Vehicle):
 
     name = "px4"
+    # PX4's receiver takes only LOCAL_NED and BODY_NED; a body-offset frame is
+    # dropped with "coordinate frame 9 unsupported" and OFFBOARD never engages
+    velocity_frame = BODY_NED
 
     def __init__(self, link):
         super().__init__(link)

@@ -5,6 +5,8 @@ import time
 
 from pymavlink import mavutil
 
+from .link import BODY_OFFSET_NED
+
 logger = logging.getLogger(__name__)
 
 # MAV_CMD_COMPONENT_ARM_DISARM param2: arm or disarm anyway, skip the checks
@@ -22,6 +24,7 @@ class Vehicle:
     """The verbs both autopilots share. Subclasses add the rest."""
 
     name = "unknown"
+    velocity_frame = BODY_OFFSET_NED
 
     def __init__(self, link):
         self.link = link
@@ -80,7 +83,7 @@ class Vehicle:
         return self._acked(mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 1)
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
-        self.link.send_velocity_body(vx, vy, vz, yaw_rate)
+        self.link.send_velocity_body(vx, vy, vz, yaw_rate, self.velocity_frame)
 
     def tick(self):
         """Called every driver tick. Nothing to keep up by default."""

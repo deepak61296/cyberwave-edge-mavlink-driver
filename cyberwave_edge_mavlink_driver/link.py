@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 VEL_MASK = 0b0000011111000111  # velocity + yaw rate, everything else ignored
 HEARTBEAT_TIMEOUT_S = 3.0
 
+# setpoint frames: ArduPilot takes body-offset, PX4 only takes these two
+BODY_OFFSET_NED = mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
+BODY_NED = mavutil.mavlink.MAV_FRAME_BODY_NED
+
 # HEARTBEAT types that are never the aircraft
 NON_VEHICLE_HEARTBEAT_TYPES = frozenset({
     mavutil.mavlink.MAV_TYPE_GCS,
@@ -222,9 +226,8 @@ class MavlinkLink:
             time.sleep(0.05)
         return None
 
-    def send_velocity_body(self, vx, vy, vz, yaw_rate):
+    def send_velocity_body(self, vx, vy, vz, yaw_rate, frame=BODY_OFFSET_NED):
         """One body-frame velocity setpoint. Callers stream this at 10 Hz."""
         self.m.mav.set_position_target_local_ned_send(
-            0, self.m.target_system, self.m.target_component,
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+            0, self.m.target_system, self.m.target_component, frame,
             VEL_MASK, 0, 0, 0, vx, vy, vz, 0, 0, 0, 0, yaw_rate)
