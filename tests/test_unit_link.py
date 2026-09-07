@@ -211,19 +211,19 @@ def test_a_chunk_without_its_head_is_dropped():
 
 # --- a link the autopilot dropped -------------------------------------
 
-def link_at_eof(fresh, monkeypatch):
-    """A link whose socket hung up, with the next open handing back fresh."""
+def live_link(fresh, monkeypatch):
+    """A link we opened and that is beating, next open handing back fresh."""
     monkeypatch.setattr(link_module.mavutil, "mavlink_connection",
                         lambda connection: fresh)
     monkeypatch.setattr(link_module.time, "sleep", lambda seconds: None)
     link = link_with(FakeMav())
-    link._note_eof()
+    link.state["last_heartbeat"] = link.up_at = time.time()
     return link
 
 
-def test_a_dead_link_is_reopened_and_the_streams_asked_for_again(monkeypatch):
+def test_a_silent_link_is_reopened_and_the_streams_asked_for_again(monkeypatch):
     fresh = FakeMav([FakeHeartbeat()])
-    link = link_at_eof(fresh, monkeypatch)
+    link = live_link(fresh, monkeypatch)
     dead = link.m
     link.state["last_heartbeat"] = time.time() - 10
 
@@ -232,21 +232,32 @@ def test_a_dead_link_is_reopened_and_the_streams_asked_for_again(monkeypatch):
     assert dead.closed
     assert link.m is fresh
     assert fresh.streams                          # 10 Hz asked for again
-    assert fresh.handle_eof == link._note_eof     # and the hook follows
+    assert fresh.handle_eof == link_module._ignore_eof   # and no print flood
 
-    assert link.connected()
+    assert link.ready() and link.connected()
     assert link.pump_once(timeout=0.01) is None   # healthy, so no second one
     assert link.reopens == 1
 
 
-def test_eof_alone_does_not_reopen_a_link_still_beating(monkeypatch):
+def test_a_link_still_beating_is_left_alone(monkeypatch):
     fresh = FakeMav([FakeHeartbeat()])
-    link = link_at_eof(fresh, monkeypatch)
-    link.state["last_heartbeat"] = time.time()
+    link = live_link(fresh, monkeypatch)
 
     assert link.pump_once(timeout=0.01) is None
     assert link.reopens == 0
     assert link.m is not fresh
+
+
+def test_nothing_is_sent_into_a_link_being_rebuilt():
+    mav = FakeMav()
+    link = link_with(mav)
+    link.close()
+
+    link.send_command(400, 1)
+    link.send_velocity_body(1.0, 0, 0, 0)
+    link.request_streams()
+    assert not link.ready()
+    assert mav.sent == [] and mav.streams == []
 
 
 def test_send_command_pads_to_seven_and_drops_the_stale_ack():

@@ -185,6 +185,14 @@ def test_refused_arm_reply_carries_the_reason(driver):
     assert reply["reason"] == "Arm: RC not found"
 
 
+def test_commands_are_refused_while_the_link_is_rebuilt(driver):
+    driver.link.m = None
+    reply = send(driver, {"source_type": "tele", "command": "arm", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "not connected"
+    assert driver.vehicle.calls == []
+
+
 def test_unknown_command_is_answered_not_dropped(driver):
     reply = send(driver, {"source_type": "tele", "command": "calibrate_compass", "data": {}})
     assert reply["status"] == "error"

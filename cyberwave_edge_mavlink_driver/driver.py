@@ -239,6 +239,9 @@ class MavlinkDriver(BaseDriver):
             self._reply(cmd, ok, reason)
 
     def _execute(self, cmd, data):
+        # while the link is being rebuilt a verb would only wait out its ack
+        if not self.link.ready():
+            return False, "not connected"
         v = self.vehicle
         if cmd == "takeoff":
             return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))
