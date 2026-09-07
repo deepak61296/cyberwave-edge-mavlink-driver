@@ -9,6 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 from cyberwave.driver import DriverOperationMode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -666,3 +667,9 @@ def test_manifest_says_what_the_verbs_take():
     assert entries["turn_left"]["args"][0]["unit"] == "rad/s"
     for verb in list(contract.DISCRETE) + list(contract.CONTINUOUS):
         assert entries[verb]["description"]
+
+
+def test_the_committed_catalog_is_the_generated_one():
+    """cw-driver.yml is written by --write-cw-driver; it must not go stale."""
+    on_disk = Path(__file__).resolve().parents[1] / "cw-driver.yml"
+    assert yaml.safe_load(on_disk.read_text()) == MavlinkDriver.get_manifest(compiled=False)

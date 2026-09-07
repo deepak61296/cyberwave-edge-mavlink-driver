@@ -1,0 +1,175 @@
+# Generated: python -m cyberwave_edge_mavlink_driver.main --write-cw-driver
+# Edit contract.py and define_interface, then write it again.
+
+registry_id: holybro/px4vision
+mqtt:
+  schema_version: 1
+  driver_family: python
+  twin:
+    command:
+      payload_schema_ref: TwinCommandPayload
+      description: Command ingress and management events
+      direction: subscribe
+      source_types:
+      - tele
+      - sim_tele
+    telemetry:
+      payload_schema_ref: TwinTelemetryPayload
+      description: Driver lifecycle and health snapshots
+      direction: publish
+      source_types:
+      - edge
+    position:
+      payload_schema_ref: TwinPositionPayload
+      description: ''
+      direction: both
+      source_types:
+      - edge
+    rotation:
+      payload_schema_ref: TwinRotationPayload
+      description: ''
+      direction: both
+      source_types:
+      - edge
+  joint:
+    update:
+      payload_schema_ref: JointStatesPayload
+      description: ''
+      direction: both
+      source_types:
+      - edge
+  commands:
+    supported:
+    - stop
+    - name: takeoff
+      args:
+      - name: altitude
+        default: 2.0
+        unit: m
+      description: Arm and climb to the given altitude
+    - name: land
+      description: Land where the aircraft is
+    - name: return_to_home
+      description: Fly back to the home point and land
+    - name: cancel_takeoff
+      description: Stop the climb and hold position
+    - name: cancel_landing
+      description: Stop the descent and hold position
+    - name: cancel_return_to_home
+      description: Stop the return and hold position
+    - name: emergency_stop
+      description: Drop the automation and hold position, motors running
+    - name: set_home_here
+      description: Make the current position home
+    - name: reboot
+      description: Reboot the flight controller, refused with the motors running
+    - name: arm
+      args:
+      - name: force
+        default: false
+        unit: null
+      description: Start the motors; force skips the autopilot's own checks
+    - name: disarm
+      args:
+      - name: force
+        default: false
+        unit: null
+      description: Stop the motors; in the air it takes force
+    - name: brake
+      description: Stop moving and hold position
+    - name: kill
+      args:
+      - name: force
+        default: false
+        unit: null
+      description: Cut the motors now; in the air it takes force
+    - name: hover
+      description: Hold position, the flight handle's word for brake
+    - name: move_forward
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_x
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Fly forward while the bursts keep coming, or by the distance given
+    - name: move_backward
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_x
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Fly backward while the bursts keep coming, or by the distance given
+    - name: strafe_right
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_y
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Slide right while the bursts keep coming, or by the distance given
+    - name: strafe_left
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_y
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Slide left while the bursts keep coming, or by the distance given
+    - name: descend
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_z
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Descend while the bursts keep coming, or by the distance given
+    - name: ascend
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: linear_z
+        default: 1.0
+        unit: m/s
+      - name: distance
+        default: null
+        unit: m
+      description: Climb while the bursts keep coming, or by the distance given
+    - name: turn_right
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: angular_z
+        default: 0.5
+        unit: rad/s
+      - name: distance
+        default: null
+        unit: rad
+      description: Yaw right while the bursts keep coming, or by the distance given
+    - name: turn_left
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: angular_z
+        default: 0.5
+        unit: rad/s
+      - name: distance
+        default: null
+        unit: rad
+      description: Yaw left while the bursts keep coming, or by the distance given
