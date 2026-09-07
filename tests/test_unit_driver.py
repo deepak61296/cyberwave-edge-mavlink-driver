@@ -9,6 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 from cyberwave.driver import DriverOperationMode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -391,6 +392,67 @@ def test_stick_vector_from_a_burst(driver):
     assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
 
 
+def test_a_stick_reads_the_axis_the_catalog_declares(driver):
+    driver._on_stick({"source_type": "tele", "command": "strafe_right",
+                      "data": {"linear_y": 0.4}})
+    assert driver._stick == (0, 0.4, 0, 0)
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"linear_z": 0.6}})
+    assert driver._stick == (0, 0, -0.6, 0)
+
+
+def test_distance_sets_how_long_the_stick_lives(driver):
+    """flight.ascend(2.0) sends one envelope and never refreshes it."""
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 2.0}})
+    assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
+    assert driver._stick_window == pytest.approx(2.0)
+    driver._stick_at -= 1.9
+    asyncio.run(driver.on_tick())
+    assert ("velocity", (0, 0, -1.0, 0)) in driver.vehicle.calls
+    driver._stick_at -= 0.2                 # past the two seconds
+    asyncio.run(driver.on_tick())
+    assert driver._stick is None
+    until(lambda: ("release",) in driver.vehicle.calls)
+
+
+def test_distance_is_flown_at_the_speed_it_was_sent_with(driver):
+    driver._on_stick({"source_type": "tele", "command": "move_forward",
+                      "data": {"distance": 4.0, "linear_x": 2.0}})
+    assert driver._stick == (2.0, 0, 0, 0)
+    assert driver._stick_window == pytest.approx(2.0)
+
+
+def test_a_distance_that_would_run_too_long_is_refused(driver):
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 100.0}})
+    assert driver._stick is None
+    reply = driver.client.mqtt.replies[-1]
+    assert reply["status"] == "error"
+    assert reply["command"] == "ascend"
+    assert reply["reason"] == "too far, more than 30s of travel"
+
+
+def test_stop_ends_a_distance_early(driver):
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 10.0}})
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver._on_stop_cmd({"source_type": "tele", "command": "stop", "data": {}}))
+    assert driver._stick is None
+    asyncio.run(driver.on_tick())
+    assert driver.vehicle.calls.count(("velocity", (0, 0, -1.0, 0))) == 1
+
+
+def test_a_stick_without_distance_keeps_the_dead_man(driver):
+    driver._on_stick({"source_type": "tele", "command": "move_forward",
+                      "data": {"linear_x": 1.0}})
+    assert driver._stick_window == contract.STICK_TIMEOUT_S
+    asyncio.run(driver.on_tick())
+    driver._stick_at -= contract.STICK_TIMEOUT_S + 0.1
+    asyncio.run(driver.on_tick())
+    assert driver._stick is None
+
+
 def test_sim_tele_stick_is_dropped(driver):
     driver._on_stick({"source_type": "sim_tele", "command": "move_forward", "data": {}})
     assert driver._stick is None
@@ -493,6 +555,30 @@ def test_quiet_attitude_asks_for_streams_again_but_not_every_tick(driver):
     assert len(driver.stream_requests) == 1
 
 
+def test_the_link_going_quiet_and_coming_back_each_raise_one_alert(driver):
+    alerts = []
+    driver.create_twin_alert = lambda name, **kw: alerts.append((name, kw["severity"]))
+    asyncio.run(driver.on_tick())
+    assert alerts == []
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert [severity for _, severity in alerts] == ["error"]
+    driver.link.state["last_heartbeat"] = time.time()
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert [severity for _, severity in alerts] == ["error", "info"]
+    assert alerts[1][0] == "MAVLink link back"
+
+
+def test_a_failing_alert_does_not_break_the_tick(driver):
+    def boom(*a, **kw):
+        raise RuntimeError("no route to the platform")
+    driver.create_twin_alert = boom
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    asyncio.run(driver.on_tick())
+
+
 def test_lost_broker_flags_the_reconnect_loop(driver):
     asyncio.run(driver.on_tick())
     assert not driver._connection_lost.is_set()
@@ -591,3 +677,23 @@ def test_manifest_lists_every_verb_offline():
         assert entry["continuous"] is True
     assert set(manifest["mqtt"]["twin"]) == {"command", "telemetry", "position", "rotation"}
     assert set(manifest["mqtt"]["joint"]) == {"update"}
+
+
+def test_manifest_says_what_the_verbs_take():
+    supported = MavlinkDriver.get_manifest(compiled=False)["mqtt"]["commands"]["supported"]
+    entries = {c["name"]: c for c in supported if isinstance(c, dict)}
+    assert entries["takeoff"]["args"] == [
+        {"name": "altitude", "default": contract.DEFAULT_TAKEOFF_ALT, "unit": "m"}]
+    assert entries["move_forward"]["args"] == [
+        {"name": "linear_x", "default": contract.DEFAULT_SPEED, "unit": "m/s"},
+        {"name": "distance", "default": None, "unit": "m"}]
+    assert entries["kill"]["args"] == [{"name": "force", "default": False, "unit": None}]
+    assert entries["turn_left"]["args"][0]["unit"] == "rad/s"
+    for verb in list(contract.DISCRETE) + list(contract.CONTINUOUS):
+        assert entries[verb]["description"]
+
+
+def test_the_committed_catalog_is_the_generated_one():
+    """cw-driver.yml is written by --write-cw-driver; it must not go stale."""
+    on_disk = Path(__file__).resolve().parents[1] / "cw-driver.yml"
+    assert yaml.safe_load(on_disk.read_text()) == MavlinkDriver.get_manifest(compiled=False)

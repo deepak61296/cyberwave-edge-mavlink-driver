@@ -86,19 +86,35 @@ direction "both"). `status` is unchanged; the rest is additive:
 - `cyberwave/twin/<uuid>/telemetry`: `{"type": "vehicle_state", "armed":
   bool, "mode": str, "flight_state": str, "motors_pwm": [...]}`, on every
   change and at least once a second
+- twin alerts: one `mavlink_link` alert at severity `error` when the
+  autopilot stops sending heartbeats, one at `info` when it is back. Only
+  the two transitions, and the REST call runs off the tick loop
+
+The SDK's own `driver_info` snapshot goes out once a second beside these,
+and `driver_info_extra()` puts armed, mode and flight_state into it too. That
+repeats what `vehicle_state` already carries, deliberately: a consumer
+watching the lifecycle snapshot alone still sees the aircraft, while one
+watching telemetry gets each change when it happens instead of at the next
+second.
 
 Contract behaviors honored:
 
 - **Dead-man**: continuous commands must refresh within **500 ms** or the
-  driver zeroes the sticks (mirrors the DJI driver and PX4 offboard).
+  driver zeroes the sticks (mirrors the DJI driver and PX4 offboard). An
+  envelope that carries `distance` is the exception: `flight.ascend(2.0)`
+  sends one and never refreshes it, so the sticks are held for as long as
+  that distance takes at the commanded speed, 30 s at the most. A later
+  stick, a `stop` or any hold verb still ends it early.
 - **`source_type` policy**: `tele` always executes; `sim_tele` only when
   `CYBERWAVE_ACCEPT_SIM_TELE=1` (default **off**, per the contract: "Only
   source_type tele is executed on the aircraft"; export it for SITL rigs).
   `edit`, `edge`, and untagged envelopes are dropped: stricter than the SDK's
   generic listener policy (which accepts `edit` and untagged), a deliberate
   choice for a flying vehicle.
-- Magnitudes ride in `data.linear_x` / `data.angular_z`; direction comes
-  from the command name.
+- Magnitudes ride in `data.linear_x` / `data.angular_z`, or in the axis the
+  catalog names for the verb (`linear_y` for a strafe, `linear_z` for a
+  climb); direction comes from the command name. Every verb declares its
+  arguments and their units, so the catalog and the MCP can see what it takes.
 
 ## Architecture
 
@@ -128,6 +144,20 @@ cyberwave_edge_mavlink_driver/
 - **publishers** are registry publishers on the tick loop, `source_type`
   `edge`, and run whether or not a controller is attached.
 - The backend is picked from `HEARTBEAT.autopilot` (3 ArduPilot, 12 PX4).
+
+`cw-driver.yml` at the repo root is generated, never edited by hand. It comes
+from `contract.py` and `define_interface`, so change those and then run
+`python -m cyberwave_edge_mavlink_driver.main --write-cw-driver`, committing
+the new file with the change that caused it. A unit test compares the
+committed catalog against the one the code produces, so a stale file fails
+the suite rather than reaching a twin.
+
+`on_reconnect` is the SDK's hook for reopening the device transport, and here
+it reopens the broker instead. MAVLink needs no help: the pump thread sees a
+socket that has gone silent and rebuilds the link itself. The broker does,
+because nothing else notices it, so `on_tick` sets the base's
+`_connection_lost` flag as soon as `mqtt.connected` reads false and the base
+then calls `on_reconnect` until the client is back.
 
 ## Run it (SITL quickstart)
 

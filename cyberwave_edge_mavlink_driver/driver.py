@@ -14,6 +14,7 @@ import time
 from cyberwave.driver import (
     BaseDriver,
     CallbackGroup,
+    CommandArg,
     CommandArgs,
     DriverOperationMode,
     ProtocolArgs,
@@ -60,8 +61,10 @@ class MavlinkDriver(BaseDriver):
         self._running = None            # the discrete verb that has the aircraft
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0
+        self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
         self._sticks_live = False
         self._streams_at = 0.0
+        self._link_up = True            # last state we raised an alert about
         self._pump = None
         self._pump_stop = threading.Event()
         self.stopping = threading.Event()   # the shutdown has begun
@@ -77,15 +80,26 @@ class MavlinkDriver(BaseDriver):
         sources = ProtocolArgs(source_types=["tele", "sim_tele"])
         for name in contract.DISCRETE:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_command),
-                               protocol=sources, command=CommandArgs(name=name))
+                               protocol=sources, command=self._catalog_entry(name))
         for name in contract.CONTINUOUS:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_stick), protocol=sources,
-                               command=CommandArgs(name=name, continuous=True, rate_hz=10))
+                               command=self._catalog_entry(name, continuous=True, rate_hz=10))
         t = self.telemetry
         self._publish(iface, TWIN_POSITION_TOPIC_SLUG, "TwinPositionPayload", t.position)
         self._publish(iface, TWIN_ROTATION_TOPIC_SLUG, "TwinRotationPayload", t.rotation)
         self._publish(iface, JOINT_UPDATE_TOPIC_SLUG, "JointStatesPayload", t.prop_joints)
         self._publish(iface, TWIN_TELEMETRY_TOPIC_SLUG, "TwinTelemetryPayload", t.vehicle_state)
+
+    @staticmethod
+    def _catalog_entry(name, **kwargs):
+        """One command as the catalog sees it, arguments and description.
+
+        The contract's table is the source; the SDK turns it into
+        commands.specs, which is what the platform and the MCP read.
+        """
+        description, args = contract.CATALOG[name]
+        return CommandArgs(name=name, description=description,
+                           args=tuple(CommandArg(*a) for a in args), **kwargs)
 
     @staticmethod
     def _publish(iface, slug, schema, callback):
@@ -155,6 +169,7 @@ class MavlinkDriver(BaseDriver):
     async def on_tick(self):
         now = time.time()
         self.vehicle.tick()
+        self._watch_link()
         if not self._running:   # a discrete verb has the aircraft until it is done
             self._tick_sticks(now)
         # a cold-booted autopilot can miss the first stream request
@@ -165,10 +180,39 @@ class MavlinkDriver(BaseDriver):
         if not self.client.mqtt.connected:
             self._connection_lost.set()
 
+    def _watch_link(self):
+        """One alert when the aircraft stops talking, one when it is back."""
+        up = self.link.connected()
+        if up == self._link_up:
+            return
+        self._link_up = up
+        if up:
+            logger.info("mavlink link back after %d reopen(s)", self.link.reopens)
+            self._link_alert("MAVLink link back",
+                             "The autopilot is sending heartbeats again.", "info",
+                             auto_resolve_after=60.0)
+        else:
+            logger.warning("mavlink link lost")
+            self._link_alert("MAVLink link lost",
+                             "No heartbeat from the autopilot; the aircraft "
+                             "takes no commands until it is back.", "error")
+
+    def _link_alert(self, name, description, severity, **kwargs):
+        """Tell the twin. Called from the tick, so the SDK hands the REST
+        request to a thread of its own and we never wait on it here."""
+        try:
+            self.create_twin_alert(name, description=description,
+                                   alert_type="mavlink_link", severity=severity,
+                                   metadata={"connection": self.link.connection_string,
+                                             "reopens": self.link.reopens},
+                                   **kwargs)
+        except Exception:
+            logger.warning("could not raise the link alert")
+
     def _tick_sticks(self, now):
         """Stream a fresh stick; release once it has expired."""
         stick = self._stick
-        if stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
+        if stick is not None and now - self._stick_at < self._stick_window:
             self.vehicle.send_velocity_body(*stick)
             if not self._sticks_live:
                 self._sticks_live = True
@@ -201,13 +245,47 @@ class MavlinkDriver(BaseDriver):
                 self._dropped = True
                 logger.info("sticks dropped while %s runs", self._running)
             return
+        cmd = envelope["command"]
         data = envelope.get("data") or {}
+        ux, uy, uz, ur = contract.CONTINUOUS[cmd]
         # magnitude rides in the payload, direction comes from the name
-        speed = abs(float(data.get("linear_x", data.get("speed", contract.DEFAULT_SPEED))))
-        yaw = abs(float(data.get("angular_z", data.get("yaw_rate", contract.DEFAULT_YAW_RATE))))
-        ux, uy, uz, ur = contract.CONTINUOUS[envelope["command"]]
-        self._stick = (ux * speed, uy * speed, uz * speed, ur * yaw)
+        rate = self._magnitude(data, cmd, bool(ur))
+        window = self._window(cmd, data, rate)
+        if window is None:
+            return
+        self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
+        self._stick_window = window
         self._stick_at = time.time()
+
+    @staticmethod
+    def _magnitude(data, cmd, turning):
+        """The one number a stick carries: a yaw rate for a turn, else a speed.
+
+        The axis the catalog declares for the verb comes first, then the
+        generic field the SDK sends whatever the verb.
+        """
+        generic = ("angular_z", "yaw_rate") if turning else ("linear_x", "speed")
+        for name in (contract.STICKS[cmd][1],) + generic:
+            if name in data:
+                return abs(float(data[name]))
+        return contract.DEFAULT_YAW_RATE if turning else contract.DEFAULT_SPEED
+
+    def _window(self, cmd, data, rate):
+        """How long this stick stays live, or None if the ask is refused.
+
+        The SDK's flight.ascend(2.0) sends one envelope carrying distance and
+        never refreshes it, so the dead-man alone would end the climb after
+        half a second. With a distance we stream for as long as it takes to
+        fly it; without one nothing changes.
+        """
+        distance = abs(float(data.get("distance") or 0.0))
+        if not distance or not rate:
+            return contract.STICK_TIMEOUT_S
+        travel = distance / rate
+        if travel > contract.MAX_TRAVEL_S:
+            self._reply(cmd, False, f"too far, more than {contract.MAX_TRAVEL_S:.0f}s of travel")
+            return None
+        return travel
 
     async def _on_stop_cmd(self, envelope):
         # Not super(): the base answers stop by dropping to NO_OP, which
