@@ -10,7 +10,9 @@ DISCRETE = (
 )
 
 # These do not queue: whatever discrete verb is running gives way to them.
-URGENT = ("kill", "brake", "emergency_stop", "stop")
+# stop is not one of them. The SDK ends every stick burst with a stop, so a
+# verb sent during a burst would be cancelled by the burst's own tail.
+URGENT = ("kill", "brake", "emergency_stop")
 
 # Stick commands: name -> body frame (vx, vy, vz, yaw_rate) unit vector.
 # The body frame is NED, so +z is down.

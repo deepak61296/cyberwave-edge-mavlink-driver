@@ -247,8 +247,9 @@ class MavlinkDriver(BaseDriver):
             if cmd in contract.URGENT:
                 self.vehicle.abort.clear()
             elif self.vehicle.abort.is_set():
-                # an urgent verb is queued behind us; do not make it wait
-                self._reply(cmd, False, "superseded")
+                # an urgent verb is queued behind us; do not make it wait.
+                # it releases the sticks itself, so stop still gets its ok.
+                self._reply(cmd, cmd == "stop", "" if cmd == "stop" else "superseded")
                 return
             logger.info("executing %s %s", cmd, data or "")
             # no handle or no heartbeat: a verb would only wait out its ack.

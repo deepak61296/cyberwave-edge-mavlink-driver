@@ -294,6 +294,34 @@ def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     assert by_verb["takeoff"]["reason"] == "superseded"
 
 
+def test_stop_does_not_cancel_a_running_verb(driver):
+    """Every SDK burst ends with a stop; a land sent during one must survive."""
+    v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
+
+    def land():
+        in_land.set()
+        finish.wait(5.0)
+        return True, ""
+    v.land = land
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    assert in_land.wait(5.0)
+    stop = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "stop", "data": {}}))
+    stop.start()
+    time.sleep(0.2)
+    assert not v.abort.is_set()     # the land keeps the aircraft
+    finish.set()
+    t.join(5.0)
+    stop.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["land"]["status"] == "ok"
+    assert by_verb["land"]["reason"] == ""
+    assert by_verb["stop"]["status"] == "ok"
+
+
 def test_stop_releases_the_sticks_and_replies_leaving_the_base_alone(driver):
     """The base would drop to NO_OP and rewire every subscription per burst."""
     driver._operation_mode = DriverOperationMode.TELEOP_REMOTE
