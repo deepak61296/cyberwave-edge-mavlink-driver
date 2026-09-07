@@ -130,6 +130,7 @@ cyberwave_edge_mavlink_driver/
   vehicle.py     Vehicle: verbs both autopilots share, pick_vehicle(link)
   ardupilot.py   ArduPilot: named modes, GUIDED takeoff, BRAKE hold
   px4.py         PX4: custom_mode main/sub, AUTO.TAKEOFF then arm, Hold
+  simulated.py   SimVehicle: a model that flies here, for sim:// links
   telemetry.py   what the twin is told: pose, prop spin, vehicle_state
 ```
 
@@ -175,6 +176,23 @@ python -m cyberwave_edge_mavlink_driver.main
 
 Watch the twin in the Cyberwave viewer (LIVE tab) and fly it with the SDK
 snippet above.
+
+## Run it with no aircraft at all
+
+```bash
+export MAVLINK_CONNECTION=sim://quad   # or sim://dji
+python -m cyberwave_edge_mavlink_driver.main
+```
+
+`sim://` puts `SimVehicle` behind the driver instead of a socket: a small
+kinematic model stepped from the tick, so the whole vocabulary can be driven
+in CI, in a demo and in the fleet without SITL. `sim://quad` is a generic
+aircraft, `sim://dji` answers the way `docs/DJI-MAPPING.md` says a Mini 4 Pro
+does — takeoff to a fixed 1.2 m whatever was asked for, a landing that parks
+at 0.7 m until a second `land` confirms it, the same confirm on
+`return_to_home`, no `arm`, `disarm` or `kill`, and a gimbal that pitches but
+does not yaw. `tools/conformance.py --profile dji` in the project root expects
+those refusals.
 
 ## Status / roadmap
 
