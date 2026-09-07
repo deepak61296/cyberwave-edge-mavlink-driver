@@ -225,12 +225,31 @@ def test_px4_takeoff_sets_the_mode_before_arming():
         elif cmd == ARM:
             link.state["armed"] = True
             link.state["landed"] = "in_air"
+            link.state["alt"] = 2.8
 
     link = link_with(autopilot)
     assert PX4(link).takeoff(3.0) == (True, "")
     assert link.m.commands() == [SET_MODE, ARM]
     assert link.m.params[b"MIS_TAKEOFF_ALT"] == 3.0
     assert all(math.isnan(p) for p in link.m.sent[0][7:])   # unused params are NaN
+
+
+def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state():
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = px4.custom_mode(int(p2), int(p3))
+        elif cmd == ARM:
+            link.state["armed"] = True
+            link.state["landed"] = "in_air"   # PX4 says this from 0 m up
+
+    link = link_with(autopilot)
+    px4.TAKEOFF_CONFIRM_S, keep = 0.5, px4.TAKEOFF_CONFIRM_S
+    try:
+        ok, reason = PX4(link).takeoff(3.0)
+    finally:
+        px4.TAKEOFF_CONFIRM_S = keep
+    assert not ok
+    assert "still climbing" in reason
 
 
 def test_px4_force_arm_is_downgraded_to_a_plain_arm():

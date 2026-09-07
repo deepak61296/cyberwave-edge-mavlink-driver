@@ -24,6 +24,7 @@ AUTO_SUB = {"READY": 1, "TAKEOFF": 2, "LOITER": 3, "MISSION": 4, "RTL": 5, "LAND
 
 AUTO = MAIN["AUTO"]
 TAKEOFF_CONFIRM_S = 20.0
+TAKEOFF_TOLERANCE_M = 0.5   # PX4 settles a little under MIS_TAKEOFF_ALT
 GCS_HEARTBEAT_S = 1.0
 
 
@@ -105,12 +106,19 @@ class PX4(Vehicle):
         ok, reason = self.set_armed(True)
         if not ok:
             return ok, reason
+        # PX4 calls the landed state in_air the moment the climb starts, so
+        # that alone hands back an aircraft still on the ground: wait for the
+        # altitude too, or the next verb runs at zero and nothing moves
+        want = altitude - TAKEOFF_TOLERANCE_M
         end = time.time() + TAKEOFF_CONFIRM_S
         while time.time() < end:
-            if self.in_air():
-                logger.info("airborne, climbing to %.1f m", altitude)
+            if self.in_air() and self.link.state["alt"] >= want:
+                logger.info("airborne at %.1f m", self.link.state["alt"])
                 return True, ""
             time.sleep(0.2)
+        if self.in_air():
+            return False, (f"still climbing, {self.link.state['alt']:.1f} m of "
+                           f"{altitude:.1f} m after {TAKEOFF_CONFIRM_S:.0f}s")
         return False, "armed but never left the ground"
 
     def land(self):
