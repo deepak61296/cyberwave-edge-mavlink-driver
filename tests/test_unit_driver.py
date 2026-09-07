@@ -391,6 +391,15 @@ def test_stick_vector_from_a_burst(driver):
     assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
 
 
+def test_a_stick_reads_the_axis_the_catalog_declares(driver):
+    driver._on_stick({"source_type": "tele", "command": "strafe_right",
+                      "data": {"linear_y": 0.4}})
+    assert driver._stick == (0, 0.4, 0, 0)
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"linear_z": 0.6}})
+    assert driver._stick == (0, 0, -0.6, 0)
+
+
 def test_distance_sets_how_long_the_stick_lives(driver):
     """flight.ascend(2.0) sends one envelope and never refreshes it."""
     driver._on_stick({"source_type": "tele", "command": "ascend",
@@ -643,3 +652,17 @@ def test_manifest_lists_every_verb_offline():
         assert entry["continuous"] is True
     assert set(manifest["mqtt"]["twin"]) == {"command", "telemetry", "position", "rotation"}
     assert set(manifest["mqtt"]["joint"]) == {"update"}
+
+
+def test_manifest_says_what_the_verbs_take():
+    supported = MavlinkDriver.get_manifest(compiled=False)["mqtt"]["commands"]["supported"]
+    entries = {c["name"]: c for c in supported if isinstance(c, dict)}
+    assert entries["takeoff"]["args"] == [
+        {"name": "altitude", "default": contract.DEFAULT_TAKEOFF_ALT, "unit": "m"}]
+    assert entries["move_forward"]["args"] == [
+        {"name": "linear_x", "default": contract.DEFAULT_SPEED, "unit": "m/s"},
+        {"name": "distance", "default": None, "unit": "m"}]
+    assert entries["kill"]["args"] == [{"name": "force", "default": False, "unit": None}]
+    assert entries["turn_left"]["args"][0]["unit"] == "rad/s"
+    for verb in list(contract.DISCRETE) + list(contract.CONTINUOUS):
+        assert entries[verb]["description"]

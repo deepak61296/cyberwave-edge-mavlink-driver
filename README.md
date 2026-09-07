@@ -101,8 +101,10 @@ Contract behaviors honored:
   `edit`, `edge`, and untagged envelopes are dropped: stricter than the SDK's
   generic listener policy (which accepts `edit` and untagged), a deliberate
   choice for a flying vehicle.
-- Magnitudes ride in `data.linear_x` / `data.angular_z`; direction comes
-  from the command name.
+- Magnitudes ride in `data.linear_x` / `data.angular_z`, or in the axis the
+  catalog names for the verb (`linear_y` for a strafe, `linear_z` for a
+  climb); direction comes from the command name. Every verb declares its
+  arguments and their units, so the catalog and the MCP can see what it takes.
 
 ## Architecture
 

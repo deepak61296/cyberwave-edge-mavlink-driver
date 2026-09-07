@@ -14,6 +14,7 @@ import time
 from cyberwave.driver import (
     BaseDriver,
     CallbackGroup,
+    CommandArg,
     CommandArgs,
     DriverOperationMode,
     ProtocolArgs,
@@ -78,15 +79,26 @@ class MavlinkDriver(BaseDriver):
         sources = ProtocolArgs(source_types=["tele", "sim_tele"])
         for name in contract.DISCRETE:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_command),
-                               protocol=sources, command=CommandArgs(name=name))
+                               protocol=sources, command=self._catalog_entry(name))
         for name in contract.CONTINUOUS:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_stick), protocol=sources,
-                               command=CommandArgs(name=name, continuous=True, rate_hz=10))
+                               command=self._catalog_entry(name, continuous=True, rate_hz=10))
         t = self.telemetry
         self._publish(iface, TWIN_POSITION_TOPIC_SLUG, "TwinPositionPayload", t.position)
         self._publish(iface, TWIN_ROTATION_TOPIC_SLUG, "TwinRotationPayload", t.rotation)
         self._publish(iface, JOINT_UPDATE_TOPIC_SLUG, "JointStatesPayload", t.prop_joints)
         self._publish(iface, TWIN_TELEMETRY_TOPIC_SLUG, "TwinTelemetryPayload", t.vehicle_state)
+
+    @staticmethod
+    def _catalog_entry(name, **kwargs):
+        """One command as the catalog sees it, arguments and description.
+
+        The contract's table is the source; the SDK turns it into
+        commands.specs, which is what the platform and the MCP read.
+        """
+        description, args = contract.CATALOG[name]
+        return CommandArgs(name=name, description=description,
+                           args=tuple(CommandArg(*a) for a in args), **kwargs)
 
     @staticmethod
     def _publish(iface, slug, schema, callback):
@@ -206,7 +218,7 @@ class MavlinkDriver(BaseDriver):
         data = envelope.get("data") or {}
         ux, uy, uz, ur = contract.CONTINUOUS[cmd]
         # magnitude rides in the payload, direction comes from the name
-        rate = self._magnitude(data, bool(ur))
+        rate = self._magnitude(data, cmd, bool(ur))
         window = self._window(cmd, data, rate)
         if window is None:
             return
@@ -215,9 +227,14 @@ class MavlinkDriver(BaseDriver):
         self._stick_at = time.time()
 
     @staticmethod
-    def _magnitude(data, turning):
-        """The one number a stick carries: a yaw rate for a turn, else a speed."""
-        for name in ("angular_z", "yaw_rate") if turning else ("linear_x", "speed"):
+    def _magnitude(data, cmd, turning):
+        """The one number a stick carries: a yaw rate for a turn, else a speed.
+
+        The axis the catalog declares for the verb comes first, then the
+        generic field the SDK sends whatever the verb.
+        """
+        generic = ("angular_z", "yaw_rate") if turning else ("linear_x", "speed")
+        for name in (contract.STICKS[cmd][1],) + generic:
             if name in data:
                 return abs(float(data[name]))
         return contract.DEFAULT_YAW_RATE if turning else contract.DEFAULT_SPEED
