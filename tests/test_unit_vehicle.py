@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import mavutil  # noqa: E402
 
-from cyberwave_edge_mavlink_driver import px4  # noqa: E402
+from cyberwave_edge_mavlink_driver import ardupilot, px4  # noqa: E402
 from cyberwave_edge_mavlink_driver.ardupilot import ArduPilot  # noqa: E402
 from cyberwave_edge_mavlink_driver.link import MavlinkLink  # noqa: E402
 from cyberwave_edge_mavlink_driver.px4 import PX4  # noqa: E402
@@ -216,6 +216,30 @@ def test_ardupilot_mode_refusal_without_words_says_what_it_waited_for():
     assert reason.startswith("could not enter BRAKE within")
 
 
+def test_ardupilot_takeoff_is_guided_then_arm_then_nav_takeoff(monkeypatch):
+    monkeypatch.setattr(ardupilot, "ARM_TRY_S", 0.2)
+    monkeypatch.setattr(ardupilot, "ARM_RETRY_S", 2.0)
+    asked = []
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            asked.append(cmd)
+            if len(asked) == 1:     # pre-arm refuses the first ask with words, no bit
+                link._texts.append((time.time(), "PreArm: waiting for EKF"))
+            else:
+                link.state["armed"] = True
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+
+    link = link_with(autopilot)
+    assert ArduPilot(link).takeoff(3.0) == (True, "")
+    assert link.m.commands() == [SET_MODE, ARM, ARM, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF]
+    assert link.m.sent[0][5] == COPTER_MODES["GUIDED"]
+    assert link.m.sent[-1][10] == 3.0                # NAV_TAKEOFF param7 is the altitude
+
+
 def test_ardupilot_hold_on_the_ground_does_nothing():
     link = link_with()
     assert ArduPilot(link).hold() == (True, "")
@@ -255,7 +279,7 @@ def test_px4_takeoff_sets_the_mode_before_arming():
     assert all(math.isnan(p) for p in link.m.sent[0][7:])   # unused params are NaN
 
 
-def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state():
+def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state(monkeypatch):
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:
             link.state["mode"] = px4.custom_mode(int(p2), int(p3))
@@ -264,11 +288,8 @@ def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state():
             link.state["landed"] = "in_air"   # PX4 says this from 0 m up
 
     link = link_with(autopilot)
-    px4.TAKEOFF_CONFIRM_S, keep = 0.5, px4.TAKEOFF_CONFIRM_S
-    try:
-        ok, reason = PX4(link).takeoff(3.0)
-    finally:
-        px4.TAKEOFF_CONFIRM_S = keep
+    monkeypatch.setattr(px4, "TAKEOFF_CONFIRM_S", 0.5)
+    ok, reason = PX4(link).takeoff(3.0)
     assert not ok
     assert "still climbing" in reason
 
@@ -298,6 +319,30 @@ def test_ardupilot_never_heartbeats():
     v = ArduPilot(link)
     for _ in range(10):
         v.tick()
+    assert link.m.sent == []
+
+
+def test_px4_prepare_streams_zeros_then_asks_for_offboard():
+    """OFFBOARD only engages with a setpoint stream already running."""
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = px4.custom_mode(int(p2), int(p3))
+
+    link = link_with(autopilot)
+    link.state["armed"] = True
+    PX4(link).prepare_sticks()
+    assert [s[0] for s in link.m.sent[:5]] == ["vel"] * 5
+    assert link.m.commands() == [SET_MODE]
+    assert link.state["mode"] == px4.custom_mode(px4.MAIN["OFFBOARD"])
+
+
+def test_px4_prepare_does_nothing_disarmed_or_already_offboard():
+    link = link_with()
+    PX4(link).prepare_sticks()
+    assert link.m.sent == []
+    link.state["armed"] = True
+    link.state["mode"] = px4.custom_mode(px4.MAIN["OFFBOARD"])
+    PX4(link).prepare_sticks()
     assert link.m.sent == []
 
 

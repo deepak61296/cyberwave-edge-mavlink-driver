@@ -10,6 +10,7 @@ from .vehicle import Vehicle
 logger = logging.getLogger(__name__)
 
 ARM_RETRY_S = 30.0   # takeoff keeps asking this long; pre-arm can take a while
+ARM_TRY_S = 3.0      # each ask waits this long for the armed bit
 
 
 class ArduPilot(Vehicle):
@@ -50,7 +51,7 @@ class ArduPilot(Vehicle):
             return ok, reason
         end = time.time() + ARM_RETRY_S
         while True:
-            ok, reason = self.set_armed(True, timeout=3.0)
+            ok, reason = self.set_armed(True, timeout=ARM_TRY_S)
             if ok or self.abort.is_set() or time.time() > end:
                 break
         if not ok:
