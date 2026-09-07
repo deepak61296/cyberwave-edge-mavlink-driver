@@ -14,9 +14,10 @@ Two topics, for any twin whose asset declares `can_fly: true`.
 | `{prefix}cyberwave/twin/{twin_uuid}/telemetry` | publish | `vehicle_state`, `authority_lost` |
 
 Pose stays on `/position` and `/rotation`; per asset extras such as `/battery/status` and `/gimbal/attitude` are
-out of scope. The vocabulary is the 27 commands already published in the drone asset bundle plus five new verbs:
-`arm`, `disarm`, `brake`, `hover`, `kill`. Nothing is renamed or removed. Three vendor stacks must fit the same text, and
-they differ in ways the spec has to survive.
+out of scope. The vocabulary is the 27 commands already published in the drone asset bundle plus four new verbs:
+`arm`, `disarm`, `brake`, `kill`, and `hover`, which is not new at all: the SDK's flying twin and its flight handle
+both send it today, the bundle just does not list it. Nothing is renamed or removed. Three vendor stacks must fit
+the same text, and they differ in ways the spec has to survive.
 
 | Stack | Why it differs |
 |---|---|
@@ -46,11 +47,13 @@ never move a real aircraft.
 ```
 
 `status` is `"ok"` or `"error"`; `ok` is the same fact as a boolean, kept because `status` is the only field the
-platform itself names. `reason` is empty on success and a short lowercase phrase on failure: when the vehicle
+platform itself names. The shipping DJI driver answers `"failed"` instead of `"error"`, so a reader treats the two
+as one value. `reason` is empty on success and a short lowercase phrase on failure: when the vehicle
 supplies its own refusal text, pass it through unchanged, otherwise use one of the fixed phrases in section 3.
 `armed`, `mode` and `flight_state` report the state at the moment of the reply, not the state requested, and
 `mode` is the raw vendor string. Drivers may add fields; two are defined here, `implicit` and
-`pending_confirmation`. Three rules follow. Replies are published for discrete commands only, because a continuous
+`pending_confirmation`. Nothing in the SDK reads a reply, so the readers are the conformance script of section 7 and
+whatever listener a caller subscribes itself. Three rules follow. Replies are published for discrete commands only, because a continuous
 command has the telemetry topic as its evidence. A driver must ignore any envelope on the command topic carrying
 a `status` key, including its own replies. One command produces at most one reply.
 
@@ -75,19 +78,19 @@ no handler for refuses `not supported on this vehicle`.
 | `brake` | none | Cancel any automation in progress, zero the sticks, hold position | `not connected` | state |
 | `kill` | `force` bool | Cut motors immediately | in air without `force`: `in air, send force to override`. No vendor path: `not supported on this vehicle` | state |
 | `emergency_stop` | none | Identical to `brake`. It must not cut motors | as `brake` | state |
-| `hover` | none | Identical to `brake`. It is the name the SDK's flight handle sends | as `brake` | state |
+| `hover` | none | Identical to `brake`. It is the name the SDK already sends, from the flying twin and from the flight handle | as `brake` | state |
 | `takeoff` | `altitude` m, a request | Start motors if needed, leave the ground, climb toward `altitude`, hover. Reply carries `altitude_m`, the altitude actually used | `already in air`; vehicle refuses to arm, pass its words | state |
 | `land` | none | Descend and land. Where the vehicle has an operator confirm step, reply ok with `"pending_confirmation": true` and hold; a second `land` confirms | `not in air` | state |
-| `return_to_home` | none | Fly to the recorded home point and land | `no home set`, `no position fix` | state |
+| `return_to_home` | none | Fly to the recorded home point and land. Same confirm step as `land` where the vehicle has one: reply ok with `"pending_confirmation": true` and hold, a second `return_to_home` confirms | `no home set`, `no position fix` | state |
 | `cancel_takeoff` | none | Stop climbing, hold here | `nothing to cancel` | state |
 | `cancel_landing` | none | Stop descending, hold here | `nothing to cancel` | state |
 | `cancel_return_to_home` | none | Stop returning, hold here | `nothing to cancel` | state |
 | `stop` | none | Release stick input and hold. Always accepted | never | ack |
 | `set_home_here` | none | Record the current position as home | `no position fix` | state |
 | `set_home_location` | `latitude`, `longitude` deg, `altitude` m optional | Record the given point as home | missing or out of range coordinates | state |
-| `gimbal_rotate` | `pitch`, `yaw`, `roll` deg, `absolute` bool | Rotate the gimbal | `not supported on this vehicle`, or axis not steerable | ack |
+| `gimbal_rotate` | `pitch`, `yaw`, `roll` deg, `mode` string, `duration` s optional | Rotate the gimbal. `mode` is `absolute` or `relative`, and anything else means `absolute`. An axis left out is an axis not commanded | `not supported on this vehicle`, or axis not steerable | ack |
 | `set_gimbal_pitch` | `pitch` deg, absolute | Set absolute gimbal pitch | as above | ack |
-| `gimbal_rotate_speed` | `pitch_rate`, `yaw_rate` deg/s | Rotate at a rate until stopped | as above | ack |
+| `gimbal_rotate_speed` | `pitch`, `roll`, `yaw` in 0.1 deg/s | Rotate at a rate until stopped. `pitch=100` is 10 deg/s, and the range is -3599 to 3599 | as above | ack |
 | `start_compass_calibration` | none | Begin calibration | `motors running` | ack |
 | `stop_compass_calibration` | none | Abort calibration | never | ack |
 | `reboot` | none | Reboot the flight controller | `motors running` | ack, sent before the link drops |
@@ -101,19 +104,26 @@ rather than in either driver. `kill` carries the destructive meaning under a nam
 ### 3.2 Continuous verbs
 
 All continuous verbs are body frame; the verb names the axis and the sign. `data.linear_x` carries translation
-speed in m/s and `data.angular_z` carries yaw rate in rad/s, both unsigned magnitudes, defaulting to 1.0 and
-0.5 when absent. Gimbal rate verbs take `rate` in deg/s.
+speed in m/s and `data.angular_z` carries yaw rate in rad/s, defaulting to 1.0 and
+0.5 when absent. The sign carries nothing: the SDK sends a negative `linear_x` for `move_backward` and a positive
+`angular_z` for both turns, so a driver takes the magnitude and reads the direction from the verb.
+Gimbal rate verbs take `rate` in deg/s.
 
 | Verb | Axis and sign | Magnitude | Verb | Axis and sign | Magnitude |
 |---|---|---|---|---|---|
-| `move_forward` | body +X | `linear_x` m/s | `ascend` | up | `linear_x` m/s |
-| `move_backward` | body -X | `linear_x` m/s | `descend` | down | `linear_x` m/s |
+| `move_forward` | body +X | `linear_x` m/s | `ascend` | up | `distance` m or `linear_x` m/s |
+| `move_backward` | body -X | `linear_x` m/s | `descend` | down | `distance` m or `linear_x` m/s |
 | `strafe_left` | body -Y | `linear_x` m/s | `turn_left` | yaw counter clockwise | `angular_z` rad/s |
 | `strafe_right` | body +Y | `linear_x` m/s | `turn_right` | yaw clockwise | `angular_z` rad/s |
 | `gimbal_pitch_up` | gimbal pitch up | `rate` deg/s | `gimbal_pitch_down` | gimbal pitch down | `rate` deg/s |
 
 A continuous command expires 500 ms after the envelope that carried it, and on expiry the driver zeros that input, so callers refresh at 10 Hz to 20 Hz.
 Any discrete verb releases stick input before it executes. One that cannot be honoured produces no motion and no reply, and the driver logs it.
+
+`ascend` and `descend` are the exception to the refresh rule. The SDK's flight handle sends them once, with
+`distance` in metres, and it sends no `stop` afterwards. A driver reads `distance` as the magnitude when
+`linear_x` is absent, and the single envelope still expires after 500 ms, so one call is a short climb rather
+than a metre measured out.
 
 ## 4. Capability flags
 
@@ -184,7 +194,7 @@ must not publish zeros, and a caller treats a stale position as unknown rather t
 A conformance script drives one twin through the whole vocabulary from the platform side and prints pass or fail per
 verb, so two unrelated drivers can be compared without reading either one. For a discrete verb, pass means a single
 reply arrived on the command topic inside the driver's timeout, its `command` field matches what was sent, `status` is
-`ok`, or `error` with a non empty `reason`, and the `flight_state` in the reply agrees with the telemetry topic within
+`ok`, or `error` or `failed` with a non empty `reason`, and the `flight_state` in the reply agrees with the telemetry topic within
 one second. A refusal is a pass when the refusal is correct: the script sends `kill` without `force` while airborne,
 `land` on the ground and `reboot` with motors running, and expects `status: "error"` each time. For a continuous verb,
 pass means motion begins within 200 ms, no reply is published, and motion stops within 500 ms of the last envelope.
@@ -197,9 +207,9 @@ text does not define it and the SDK does not send it.
 
 ## 8. Open points
 
-- `arm`, `disarm`, `brake`, `hover` and `kill` are not yet in `commands.supported`, and the SDK refuses anything outside that list before it reaches MQTT.
+- `arm`, `disarm`, `brake`, `hover` and `kill` are not yet in `commands.supported`, and the SDK refuses anything outside that list before it reaches MQTT. `hover` is the odd one there: the SDK has had the method all along, only the catalog is missing it.
 - Whether `edit` may ever be executed on a live aircraft is undecided. Until it is, a driver treats `edit` as scene editor traffic and drops it.
 - There is no known path to set the capability flags of section 4 on a workspace asset, so they stay catalog only for now.
 - `vehicle_state` and `authority_lost` have no named payload schemas on the telemetry topic. Section 5 and section 6 are the only definition they have.
-- Whether the shipping DJI driver already brakes on `emergency_stop` is unconfirmed. The SDK docstring for it still describes a motor cut, which section 3.1 does not.
+- Whether the shipping DJI driver already brakes on `emergency_stop` is unconfirmed. The SDK docstring says only "best-effort emergency stop", so it settles nothing either way.
 - The two defects in section 7 and the four new verbs are independent changes and need not land together.
