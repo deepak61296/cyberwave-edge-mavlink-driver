@@ -60,9 +60,10 @@ class MavlinkDriver(BaseDriver):
         self._lock = threading.Lock()
         self._running = None            # the discrete verb that has the aircraft
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
-        self._stick_at = 0.0
+        self._stick_at = 0.0            # when its window started, None until it does
         self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
         self._sticks_live = False
+        self._sticks_ready = threading.Event()          # the backend has the aircraft
         self._streams_at = 0.0
         self._link_up = True            # last state we raised an alert about
         self._pump = None
@@ -212,11 +213,18 @@ class MavlinkDriver(BaseDriver):
     def _tick_sticks(self, now):
         """Stream a fresh stick; release once it has expired."""
         stick = self._stick
-        if stick is not None and now - self._stick_at < self._stick_window:
+        if stick is not None and (self._stick_at is None
+                                  or now - self._stick_at < self._stick_window):
             self.vehicle.send_velocity_body(*stick)
             if not self._sticks_live:
                 self._sticks_live = True
-                self._off_tick(self.vehicle.prepare_sticks)
+                self._sticks_ready.clear()
+                self._off_tick(self.vehicle.prepare_sticks, done=self._sticks_ready)
+            if self._stick_at is None and self._sticks_ready.is_set():
+                # a distance is flying time, and PX4 spends the first second and
+                # a half of a burst entering OFFBOARD: the clock starts here, on
+                # the first setpoint the aircraft is really following
+                self._stick_at = now
         elif self._sticks_live:
             self._sticks_live = False
             self._stick = None
@@ -253,9 +261,11 @@ class MavlinkDriver(BaseDriver):
         window = self._window(cmd, data, rate)
         if window is None:
             return
+        self._stick_window, timed = window
         self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
-        self._stick_window = window
-        self._stick_at = time.time()
+        # a plain stick is a dead-man and runs from the moment it lands; a
+        # distance is time on the sticks, so the tick starts its clock instead
+        self._stick_at = None if timed else time.time()
 
     @staticmethod
     def _magnitude(data, cmd, turning):
@@ -271,7 +281,8 @@ class MavlinkDriver(BaseDriver):
         return contract.DEFAULT_YAW_RATE if turning else contract.DEFAULT_SPEED
 
     def _window(self, cmd, data, rate):
-        """How long this stick stays live, or None if the ask is refused.
+        """(how long this stick stays live, is that flying time), or None if
+        the ask is refused.
 
         The SDK's flight.ascend(2.0) sends one envelope carrying distance and
         never refreshes it, so the dead-man alone would end the climb after
@@ -280,12 +291,12 @@ class MavlinkDriver(BaseDriver):
         """
         distance = abs(float(data.get("distance") or 0.0))
         if not distance or not rate:
-            return contract.STICK_TIMEOUT_S
+            return contract.STICK_TIMEOUT_S, False
         travel = distance / rate
         if travel > contract.MAX_TRAVEL_S:
             self._reply(cmd, False, f"too far, more than {contract.MAX_TRAVEL_S:.0f}s of travel")
             return None
-        return travel
+        return travel, True
 
     async def _on_stop_cmd(self, envelope):
         # Not super(): the base answers stop by dropping to NO_OP, which
@@ -294,7 +305,7 @@ class MavlinkDriver(BaseDriver):
         # envelopes in that gap. Here stop means release the sticks and reply.
         await self._on_command(envelope)
 
-    def _off_tick(self, work):
+    def _off_tick(self, work, done=None):
         """Run a stick mode change away from the tick.
 
         Entering OFFBOARD takes seconds and needs the setpoint stream to keep
@@ -307,6 +318,9 @@ class MavlinkDriver(BaseDriver):
                     work()
                 except Exception:
                     logger.exception("stick mode change failed")
+                finally:
+                    if done is not None:
+                        done.set()
 
         threading.Thread(target=run, name="sticks", daemon=True).start()
 

@@ -125,6 +125,11 @@ def send(d, envelope):
     return d.client.mqtt.replies[-1] if d.client.mqtt.replies else None
 
 
+def airborne(d):
+    """Off the ground, which is what a distance ask needs."""
+    d.link.state["armed"], d.link.state["alt"] = True, 3.0
+
+
 # --- discrete commands ------------------------------------------------
 
 def test_arm_command_parsed_and_answered(driver):
@@ -403,10 +408,14 @@ def test_a_stick_reads_the_axis_the_catalog_declares(driver):
 
 def test_distance_sets_how_long_the_stick_lives(driver):
     """flight.ascend(2.0) sends one envelope and never refreshes it."""
+    airborne(driver)
     driver._on_stick({"source_type": "tele", "command": "ascend",
                       "data": {"distance": 2.0}})
     assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
     assert driver._stick_window == pytest.approx(2.0)
+    asyncio.run(driver.on_tick())
+    until(lambda: driver._sticks_ready.is_set())
+    asyncio.run(driver.on_tick())           # the window opens here
     driver._stick_at -= 1.9
     asyncio.run(driver.on_tick())
     assert ("velocity", (0, 0, -1.0, 0)) in driver.vehicle.calls
@@ -416,7 +425,33 @@ def test_distance_sets_how_long_the_stick_lives(driver):
     until(lambda: ("release",) in driver.vehicle.calls)
 
 
+def test_a_distance_window_starts_after_the_backend_is_ready(driver):
+    """PX4 spends the first 1.5 s of a burst entering OFFBOARD, and the
+    aircraft follows nothing until it is in. That time is not flying time."""
+    airborne(driver)
+    ready = threading.Event()
+    driver.vehicle.prepare_sticks = lambda: ready.wait(5.0)
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 2.0}})
+    for _ in range(15):                     # 1.5 s of ticks, mode change pending
+        asyncio.run(driver.on_tick())
+    assert driver._stick_at is None         # none of the two seconds is spent
+    ready.set()
+    until(lambda: driver._sticks_ready.is_set())
+    asyncio.run(driver.on_tick())
+    assert driver._stick_at is not None
+    driver._stick_at -= 1.9                 # 1.9 s of the two flown
+    asyncio.run(driver.on_tick())
+    assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
+    driver._stick_at -= 0.2
+    asyncio.run(driver.on_tick())
+    assert driver._stick is None
+    # 15 setpoints through the mode change, then the full 2 s window after it
+    assert driver.vehicle.calls.count(("velocity", (0, 0, -1.0, 0))) == 17
+
+
 def test_distance_is_flown_at_the_speed_it_was_sent_with(driver):
+    airborne(driver)
     driver._on_stick({"source_type": "tele", "command": "move_forward",
                       "data": {"distance": 4.0, "linear_x": 2.0}})
     assert driver._stick == (2.0, 0, 0, 0)
@@ -434,6 +469,7 @@ def test_a_distance_that_would_run_too_long_is_refused(driver):
 
 
 def test_stop_ends_a_distance_early(driver):
+    airborne(driver)
     driver._on_stick({"source_type": "tele", "command": "ascend",
                       "data": {"distance": 10.0}})
     asyncio.run(driver.on_tick())
