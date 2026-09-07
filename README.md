@@ -90,7 +90,11 @@ direction "both"). `status` is unchanged; the rest is additive:
 Contract behaviors honored:
 
 - **Dead-man**: continuous commands must refresh within **500 ms** or the
-  driver zeroes the sticks (mirrors the DJI driver and PX4 offboard).
+  driver zeroes the sticks (mirrors the DJI driver and PX4 offboard). An
+  envelope that carries `distance` is the exception: `flight.ascend(2.0)`
+  sends one and never refreshes it, so the sticks are held for as long as
+  that distance takes at the commanded speed, 30 s at the most. A later
+  stick, a `stop` or any hold verb still ends it early.
 - **`source_type` policy**: `tele` always executes; `sim_tele` only when
   `CYBERWAVE_ACCEPT_SIM_TELE=1` (default **off**, per the contract: "Only
   source_type tele is executed on the aircraft"; export it for SITL rigs).

@@ -34,6 +34,7 @@ CONTINUOUS = {
 }
 
 STICK_TIMEOUT_S = 0.5      # no refresh in this long and the sticks release
+MAX_TRAVEL_S = 30.0        # the longest a distance may keep the sticks live
 DEFAULT_SPEED = 1.0        # m/s when a stick command carries no magnitude
 DEFAULT_YAW_RATE = 0.5     # rad/s
 DEFAULT_TAKEOFF_ALT = 2.0  # m

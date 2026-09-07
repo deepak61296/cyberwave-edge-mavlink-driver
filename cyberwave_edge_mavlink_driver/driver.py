@@ -60,6 +60,7 @@ class MavlinkDriver(BaseDriver):
         self._running = None            # the discrete verb that has the aircraft
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0
+        self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
         self._sticks_live = False
         self._streams_at = 0.0
         self._pump = None
@@ -168,7 +169,7 @@ class MavlinkDriver(BaseDriver):
     def _tick_sticks(self, now):
         """Stream a fresh stick; release once it has expired."""
         stick = self._stick
-        if stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
+        if stick is not None and now - self._stick_at < self._stick_window:
             self.vehicle.send_velocity_body(*stick)
             if not self._sticks_live:
                 self._sticks_live = True
@@ -201,13 +202,42 @@ class MavlinkDriver(BaseDriver):
                 self._dropped = True
                 logger.info("sticks dropped while %s runs", self._running)
             return
+        cmd = envelope["command"]
         data = envelope.get("data") or {}
+        ux, uy, uz, ur = contract.CONTINUOUS[cmd]
         # magnitude rides in the payload, direction comes from the name
-        speed = abs(float(data.get("linear_x", data.get("speed", contract.DEFAULT_SPEED))))
-        yaw = abs(float(data.get("angular_z", data.get("yaw_rate", contract.DEFAULT_YAW_RATE))))
-        ux, uy, uz, ur = contract.CONTINUOUS[envelope["command"]]
-        self._stick = (ux * speed, uy * speed, uz * speed, ur * yaw)
+        rate = self._magnitude(data, bool(ur))
+        window = self._window(cmd, data, rate)
+        if window is None:
+            return
+        self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
+        self._stick_window = window
         self._stick_at = time.time()
+
+    @staticmethod
+    def _magnitude(data, turning):
+        """The one number a stick carries: a yaw rate for a turn, else a speed."""
+        for name in ("angular_z", "yaw_rate") if turning else ("linear_x", "speed"):
+            if name in data:
+                return abs(float(data[name]))
+        return contract.DEFAULT_YAW_RATE if turning else contract.DEFAULT_SPEED
+
+    def _window(self, cmd, data, rate):
+        """How long this stick stays live, or None if the ask is refused.
+
+        The SDK's flight.ascend(2.0) sends one envelope carrying distance and
+        never refreshes it, so the dead-man alone would end the climb after
+        half a second. With a distance we stream for as long as it takes to
+        fly it; without one nothing changes.
+        """
+        distance = abs(float(data.get("distance") or 0.0))
+        if not distance or not rate:
+            return contract.STICK_TIMEOUT_S
+        travel = distance / rate
+        if travel > contract.MAX_TRAVEL_S:
+            self._reply(cmd, False, f"too far, more than {contract.MAX_TRAVEL_S:.0f}s of travel")
+            return None
+        return travel
 
     async def _on_stop_cmd(self, envelope):
         # Not super(): the base answers stop by dropping to NO_OP, which

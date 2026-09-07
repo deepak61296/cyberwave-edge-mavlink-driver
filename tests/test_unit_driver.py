@@ -391,6 +391,58 @@ def test_stick_vector_from_a_burst(driver):
     assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
 
 
+def test_distance_sets_how_long_the_stick_lives(driver):
+    """flight.ascend(2.0) sends one envelope and never refreshes it."""
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 2.0}})
+    assert driver._stick == (0, 0, -contract.DEFAULT_SPEED, 0)
+    assert driver._stick_window == pytest.approx(2.0)
+    driver._stick_at -= 1.9
+    asyncio.run(driver.on_tick())
+    assert ("velocity", (0, 0, -1.0, 0)) in driver.vehicle.calls
+    driver._stick_at -= 0.2                 # past the two seconds
+    asyncio.run(driver.on_tick())
+    assert driver._stick is None
+    until(lambda: ("release",) in driver.vehicle.calls)
+
+
+def test_distance_is_flown_at_the_speed_it_was_sent_with(driver):
+    driver._on_stick({"source_type": "tele", "command": "move_forward",
+                      "data": {"distance": 4.0, "linear_x": 2.0}})
+    assert driver._stick == (2.0, 0, 0, 0)
+    assert driver._stick_window == pytest.approx(2.0)
+
+
+def test_a_distance_that_would_run_too_long_is_refused(driver):
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 100.0}})
+    assert driver._stick is None
+    reply = driver.client.mqtt.replies[-1]
+    assert reply["status"] == "error"
+    assert reply["command"] == "ascend"
+    assert reply["reason"] == "too far, more than 30s of travel"
+
+
+def test_stop_ends_a_distance_early(driver):
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 10.0}})
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver._on_stop_cmd({"source_type": "tele", "command": "stop", "data": {}}))
+    assert driver._stick is None
+    asyncio.run(driver.on_tick())
+    assert driver.vehicle.calls.count(("velocity", (0, 0, -1.0, 0))) == 1
+
+
+def test_a_stick_without_distance_keeps_the_dead_man(driver):
+    driver._on_stick({"source_type": "tele", "command": "move_forward",
+                      "data": {"linear_x": 1.0}})
+    assert driver._stick_window == contract.STICK_TIMEOUT_S
+    asyncio.run(driver.on_tick())
+    driver._stick_at -= contract.STICK_TIMEOUT_S + 0.1
+    asyncio.run(driver.on_tick())
+    assert driver._stick is None
+
+
 def test_sim_tele_stick_is_dropped(driver):
     driver._on_stick({"source_type": "sim_tele", "command": "move_forward", "data": {}})
     assert driver._stick is None
