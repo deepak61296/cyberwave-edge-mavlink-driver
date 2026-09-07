@@ -9,8 +9,10 @@ from .vehicle import Vehicle
 
 logger = logging.getLogger(__name__)
 
-ARM_RETRY_S = 30.0   # takeoff keeps asking this long; pre-arm can take a while
-ARM_TRY_S = 3.0      # each ask waits this long for the armed bit
+ARM_RETRY_S = 30.0      # takeoff keeps asking this long; pre-arm can take a while
+ARM_TRY_S = 3.0         # each ask waits this long for the armed bit
+AIRBORNE_S = 20.0       # how long the climb has to show after the ack
+AIRBORNE_ALT_M = 0.5    # off the ground, when the landed state says nothing
 
 
 class ArduPilot(Vehicle):
@@ -61,10 +63,22 @@ class ArduPilot(Vehicle):
             ok, reason = self._acked(cmd, 0, 0, 0, 0, 0, 0, altitude)
             if ok:
                 logger.info("takeoff accepted, %.1f m", altitude)
-                return True, ""
+                return self._airborne()
             if self.abort.wait(2.0):    # the pause between tries, unless cut short
                 break
         return False, "NAV_TAKEOFF not accepted"
+
+    def _airborne(self):
+        """Hold the reply until the aircraft is actually up, as PX4 does.
+
+        The ack only says NAV_TAKEOFF was taken. Answering on it hands back
+        an aircraft still on the ground, and the next verb runs at zero.
+        """
+        if self._wait(lambda: self.in_air() or self.link.state["alt"] > AIRBORNE_ALT_M,
+                      AIRBORNE_S):
+            logger.info("airborne at %.1f m", self.link.state["alt"])
+            return True, ""
+        return False, "armed but never left the ground"
 
     def land(self):
         return self.set_mode("LAND")

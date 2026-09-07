@@ -232,12 +232,49 @@ def test_ardupilot_takeoff_is_guided_then_arm_then_nav_takeoff(monkeypatch):
                 link.state["armed"] = True
         elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
             link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+            link.state["landed"] = "in_air"
 
     link = link_with(autopilot)
     assert ArduPilot(link).takeoff(3.0) == (True, "")
     assert link.m.commands() == [SET_MODE, ARM, ARM, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF]
     assert link.m.sent[0][5] == COPTER_MODES["GUIDED"]
     assert link.m.sent[-1][10] == 3.0                # NAV_TAKEOFF param7 is the altitude
+
+
+def test_ardupilot_takeoff_waits_for_the_aircraft_to_leave_the_ground(monkeypatch):
+    """The ack says the command was taken, not that anything moved."""
+    monkeypatch.setattr(ardupilot, "AIRBORNE_S", 0.5)
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = True
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+
+    link = link_with(autopilot)
+    assert ArduPilot(link).takeoff(3.0) == (False, "armed but never left the ground")
+    link.state["alt"] = 1.2                      # no landed state, altitude alone
+    assert ArduPilot(link).takeoff(3.0) == (True, "")
+
+
+def test_ardupilot_takeoff_gives_way_to_a_kill_while_it_climbs():
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = True
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+
+    link = link_with(autopilot)
+    v = ArduPilot(link)
+    threading.Timer(0.2, v.abort.set).start()
+    t0 = time.time()
+    ok, _ = v.takeoff(3.0)
+    assert not ok
+    assert time.time() - t0 < 2.0                # not the full AIRBORNE_S wait
 
 
 def test_ardupilot_reports_the_altitude_it_asked_for():
