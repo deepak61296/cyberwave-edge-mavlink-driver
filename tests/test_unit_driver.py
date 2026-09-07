@@ -450,6 +450,24 @@ def test_a_distance_window_starts_after_the_backend_is_ready(driver):
     assert driver.vehicle.calls.count(("velocity", (0, 0, -1.0, 0))) == 17
 
 
+def test_a_distance_on_the_ground_is_refused_not_ignored(driver):
+    """Sticks never answer, so ascend(2.0) parked would hear nothing at all."""
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"distance": 2.0}})
+    assert driver._stick is None
+    reply = driver.client.mqtt.replies[-1]
+    assert reply["status"] == "error"
+    assert reply["command"] == "ascend"
+    assert reply["reason"] == "not in air"
+
+
+def test_a_plain_stick_on_the_ground_stays_silent(driver):
+    driver._on_stick({"source_type": "tele", "command": "ascend",
+                      "data": {"linear_z": 1.0}})
+    assert driver._stick == (0, 0, -1.0, 0)
+    assert driver.client.mqtt.replies == []
+
+
 def test_distance_is_flown_at_the_speed_it_was_sent_with(driver):
     airborne(driver)
     driver._on_stick({"source_type": "tele", "command": "move_forward",

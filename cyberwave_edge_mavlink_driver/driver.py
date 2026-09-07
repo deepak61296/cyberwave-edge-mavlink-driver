@@ -261,7 +261,14 @@ class MavlinkDriver(BaseDriver):
         window = self._window(cmd, data, rate)
         if window is None:
             return
-        self._stick_window, timed = window
+        seconds, timed = window
+        v = self.vehicle
+        if timed and not v.in_air() and not v.armed():
+            # a distance is one envelope with a caller waiting on it, and on the
+            # ground the sticks move nothing: say so rather than time out silent
+            self._reply(cmd, False, "not in air")
+            return
+        self._stick_window = seconds
         self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
         # a plain stick is a dead-man and runs from the moment it lands; a
         # distance is time on the sticks, so the tick starts its clock instead
