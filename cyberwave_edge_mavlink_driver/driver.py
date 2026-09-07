@@ -63,6 +63,7 @@ class MavlinkDriver(BaseDriver):
         self._streams_at = 0.0
         self._pump = None
         self._pump_stop = threading.Event()
+        self.stopping = threading.Event()   # the shutdown has begun
         super().__init__(params, twin=twin, **kwargs)
 
     @classmethod
@@ -120,6 +121,7 @@ class MavlinkDriver(BaseDriver):
                     self.link.connection_string, self.accept_sim_tele)
 
     async def on_shutdown(self):
+        self.stopping.set()
         self._pump_stop.set()
         if self._pump is not None:
             self._pump.join(timeout=2.0)
