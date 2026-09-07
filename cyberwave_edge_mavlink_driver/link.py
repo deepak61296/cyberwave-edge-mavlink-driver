@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 VEL_MASK = 0b0000011111000111  # velocity + yaw rate, everything else ignored
 HEARTBEAT_TIMEOUT_S = 3.0
+STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 
 # setpoint frames: ArduPilot takes body-offset, PX4 only takes these two
 BODY_OFFSET_NED = mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
@@ -95,6 +96,7 @@ class MavlinkLink:
         self._texts = collections.deque(maxlen=64)
         self._texts_lock = threading.Lock()
         self._foreign_heartbeats = set()   # logged once each
+        self._partial = None               # STATUSTEXT chunks still arriving
 
     # -- connection ----------------------------------------------------
 
@@ -180,11 +182,36 @@ class MavlinkLink:
         elif k == "EXTENDED_SYS_STATE":
             s["landed"] = LANDED_STATES.get(msg.landed_state)
         elif k == "STATUSTEXT":
-            text = msg.text.decode() if isinstance(msg.text, bytes) else msg.text
-            with self._texts_lock:
-                self._texts.append((now, text))
-            logger.info("[fc] %s", text)
+            self._statustext(now, msg)
         return k
+
+    def _statustext(self, now, msg):
+        """Fold one STATUSTEXT in, joining the chunks of a long line.
+
+        MAVLink 2 splits anything past 50 bytes into chunks that share an id
+        and count up in chunk_seq. Without this, PX4's own words arrive cut:
+        "Arming denied: Resolve system health failures firs" then "t".
+        """
+        text = msg.text.decode() if isinstance(msg.text, bytes) else msg.text
+        if getattr(msg, "chunk_seq", 0) == 0:
+            self._flush_text()
+            self._partial = [now, text]
+        elif self._partial is not None:
+            self._partial[1] += text
+        else:
+            return                      # a tail whose head we never saw
+        if len(text) < STATUSTEXT_CHUNK:
+            self._flush_text()
+
+    def _flush_text(self):
+        if self._partial is None:
+            return
+        when, text = self._partial
+        self._partial = None
+        text = text.rstrip()    # PX4 ends its own log lines with a tab
+        with self._texts_lock:
+            self._texts.append((when, text))
+        logger.info("[fc] %s", text)
 
     def texts_since(self, t0):
         """STATUSTEXT lines received at or after t0, oldest first."""
