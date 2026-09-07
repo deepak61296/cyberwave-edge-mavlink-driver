@@ -108,6 +108,12 @@ class PX4(Vehicle):
                            f"{altitude:.1f} m after {TAKEOFF_CONFIRM_S:.0f}s")
         return False, "armed but never left the ground"
 
+    def takeoff_altitude(self, asked):
+        # takeoff here returns only once the altitude is reached, so the
+        # reading at that moment is the height the aircraft really got to
+        alt = self.link.state["alt"]
+        return round(alt, 2) if self.in_air() and alt > 0 else asked
+
     def land(self):
         return self.set_mode(AUTO, AUTO_SUB["LAND"])
 

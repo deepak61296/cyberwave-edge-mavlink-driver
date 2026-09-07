@@ -240,6 +240,12 @@ def test_ardupilot_takeoff_is_guided_then_arm_then_nav_takeoff(monkeypatch):
     assert link.m.sent[-1][10] == 3.0                # NAV_TAKEOFF param7 is the altitude
 
 
+def test_ardupilot_reports_the_altitude_it_asked_for():
+    link = link_with()
+    link.state["alt"] = 0.7
+    assert ArduPilot(link).takeoff_altitude(3.0) == 3.0
+
+
 def test_ardupilot_hold_on_the_ground_does_nothing():
     link = link_with()
     assert ArduPilot(link).hold() == (True, "")
@@ -292,6 +298,14 @@ def test_px4_takeoff_waits_for_the_altitude_not_just_the_landed_state(monkeypatc
     ok, reason = PX4(link).takeoff(3.0)
     assert not ok
     assert "still climbing" in reason
+
+
+def test_px4_reports_the_altitude_it_reached():
+    link = link_with()
+    v = PX4(link)
+    assert v.takeoff_altitude(3.0) == 3.0        # still on the ground, nothing to report
+    link.state["landed"], link.state["alt"] = "in_air", 2.83
+    assert v.takeoff_altitude(3.0) == 2.83
 
 
 def test_px4_force_arm_is_downgraded_to_a_plain_arm():

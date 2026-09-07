@@ -178,6 +178,22 @@ def test_kill_and_disarm_still_answer_a_parked_aircraft(driver):
         assert reply["status"] == "ok"
 
 
+def test_takeoff_reply_carries_the_altitude(driver):
+    reply = send(driver, {"source_type": "tele", "command": "takeoff",
+                          "data": {"altitude": 4.5}})
+    assert reply["status"] == "ok"
+    assert reply["altitude_m"] == 4.5
+    assert driver.vehicle.calls == [("takeoff", 4.5)]
+    reply = send(driver, {"source_type": "tele", "command": "takeoff", "data": {}})
+    assert reply["altitude_m"] == contract.DEFAULT_TAKEOFF_ALT
+
+
+def test_only_takeoff_adds_fields_to_the_reply(driver):
+    reply = send(driver, {"source_type": "tele", "command": "arm", "data": {}})
+    assert set(reply) == {"status", "ok", "command", "reason", "armed", "mode",
+                          "flight_state", "timestamp"}
+
+
 def test_takeoff_in_the_air_is_refused_before_the_backend_runs(driver):
     driver.link.state["armed"] = True
     driver.link.state["alt"] = 3.0
