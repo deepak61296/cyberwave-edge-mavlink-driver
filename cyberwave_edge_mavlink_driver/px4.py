@@ -7,12 +7,19 @@ first, arm second.
 """
 
 import logging
+import math
 import time
 
 from pymavlink import mavutil
 
 from .link import BODY_NED
-from .vehicle import Vehicle
+from .vehicle import Vehicle, result_name
+
+try:
+    from .vehicle import VehicleError
+except ImportError:     # the shared verbs are landing on the other branch
+    class VehicleError(Exception):
+        """A refused verb, in the words the contract asks for."""
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +33,18 @@ AUTO = MAIN["AUTO"]
 TAKEOFF_CONFIRM_S = 20.0
 TAKEOFF_TOLERANCE_M = 0.5   # PX4 settles a little under MIS_TAKEOFF_ALT
 GCS_HEARTBEAT_S = 1.0
+
+# GIMBAL_MANAGER_FLAGS, the gimbal v2 word for which frame an angle is in.
+# Locked means held against the world; without the flags the angle is a
+# body angle and follows the aircraft round.
+PITCH_LOCK = 8
+YAW_LOCK = 16
+EARTH_FRAME = PITCH_LOCK | YAW_LOCK
+ALL_GIMBALS = 0             # device id 0: whichever mount the manager has
+GIMBAL_ACK_S = 2.0
+CALIBRATION_S = 3.0         # the ack is quick; the [cal] line follows it
+CALIBRATION_TRIES = 8       # a cancel lands between sampling steps, not during one
+NO_GIMBAL = "not supported on this vehicle"
 
 
 def custom_mode(main, sub=0):
@@ -42,6 +61,31 @@ def mode_name(custom):
     return mains.get(main, f"MODE({main},{sub})")
 
 
+def refusal(reason):
+    """A refusal in the contract's words where they fit, else the FC's own.
+
+    Silence and UNSUPPORTED say the same thing to a caller: this aircraft
+    does not do that. Everything else is the autopilot's own verdict and
+    goes back untouched.
+    """
+    if reason.startswith("no COMMAND_ACK") or reason == "MAV_RESULT_UNSUPPORTED":
+        return NO_GIMBAL
+    return reason
+
+
+def pitch_yaw_degrees(q):
+    """A gimbal attitude quaternion (w, x, y, z) as pitch and yaw in degrees.
+
+    The mount builds it from an intrinsic Z-Y-X euler with no roll, so the
+    two angles come straight back out; asin is clamped because a quaternion
+    off the wire is only float-accurate.
+    """
+    w, x, y, z = q
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    return round(math.degrees(pitch), 2), round(math.degrees(yaw), 2)
+
+
 class PX4(Vehicle):
 
     name = "px4"
@@ -52,6 +96,7 @@ class PX4(Vehicle):
     def __init__(self, link):
         super().__init__(link)
         self._heartbeat_at = 0.0
+        self._gimbal = None     # None until we have asked the manager for control
 
     def tick(self):
         # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
@@ -148,3 +193,135 @@ class PX4(Vehicle):
         zero()
         if self.link.state["mode"] == custom_mode(MAIN["OFFBOARD"]):
             self.set_mode(AUTO, AUTO_SUB["LOITER"], timeout=3.0, meanwhile=zero)
+
+    # -- gimbal, home point, compass ------------------------------------
+
+    def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
+        """DO_GIMBAL_MANAGER_PITCHYAW, once the manager is ours."""
+        if duration_s is not None:
+            # DJI takes a rotation time; the gimbal manager has no such field
+            # and moves at the mount's own speed, so there is nothing to send
+            logger.info("px4 has no gimbal slew time, ignoring duration %.1fs", duration_s)
+        self._take_gimbal()
+        ok, reason = self._acked(
+            mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
+            float(pitch_deg), float(yaw_deg), NAN, NAN,
+            EARTH_FRAME if absolute else 0, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
+        if not ok:
+            raise VehicleError(refusal(reason))
+        logger.info("gimbal to pitch %.1f yaw %.1f (%s)", pitch_deg, yaw_deg,
+                    "earth" if absolute else "body")
+
+    def gimbal_rate(self, pitch_dps, yaw_dps):
+        """GIMBAL_MANAGER_SET_ATTITUDE with a rate and no angle.
+
+        Not the command's own rate fields: PX4 reads a NaN angle there as
+        zero, so every refresh drags the mount back to centre and a held
+        stick moves it a tenth of a degree. The message leaves a NaN
+        quaternion alone, and that is what lets the rate add up. Nothing
+        acks it, and PX4 stops the mount itself 2 s after the last one.
+        """
+        if self._gimbal is None:
+            self._take_gimbal()
+        if not self._gimbal:
+            raise VehicleError(NO_GIMBAL)
+        self.link.m.mav.gimbal_manager_set_attitude_send(
+            self.link.m.target_system, self.link.m.target_component,
+            0, ALL_GIMBALS, [NAN] * 4, NAN,
+            math.radians(pitch_dps), math.radians(yaw_dps))
+
+    def gimbal_attitude(self):
+        """Where the mount is pointing now, (pitch, yaw) in degrees.
+
+        The pump caches every message it reads, including the two the mount
+        sends; reading that cache is safe from here because nothing but the
+        pump ever calls recv. GIMBAL_DEVICE_ATTITUDE_STATUS is the gimbal v2
+        answer and comes from the mount itself; MOUNT_ORIENTATION is the
+        older one, and on a PX4 driving a servo it is the only one that shows
+        the angle actually reached rather than the angle asked for.
+        """
+        if not self.link.ready():
+            return None
+        msg = self.link.m.messages.get("GIMBAL_DEVICE_ATTITUDE_STATUS")
+        if msg is not None:
+            return pitch_yaw_degrees(msg.q)
+        msg = self.link.m.messages.get("MOUNT_ORIENTATION")
+        if msg is not None:
+            return round(msg.pitch, 2), round(msg.yaw, 2)
+        return None
+
+    def set_home(self, lat, lon, alt_m=None):
+        """DO_SET_HOME with a point of our own, as COMMAND_INT.
+
+        param1 = 0 means "take the coordinates in this message". They go as
+        COMMAND_INT because a COMMAND_LONG carries the latitude in a float32
+        and puts home a foot or two from where it was asked for. PX4 denies
+        a non-finite altitude, so with none given we send the aircraft's own
+        height above sea level.
+        """
+        if not self.link.ready():
+            raise VehicleError("not connected")
+        if alt_m is None:
+            alt_m = self.amsl()
+            if alt_m is None:
+                raise VehicleError("no position fix")
+        cmd = mavutil.mavlink.MAV_CMD_DO_SET_HOME
+        acks = self.link.state["acks"]
+        acks.pop(cmd, None)
+        self.link.m.mav.command_int_send(
+            self.link.m.target_system, self.link.m.target_component,
+            mavutil.mavlink.MAV_FRAME_GLOBAL, cmd, 0, 0,
+            0, 0, 0, NAN, int(round(lat * 1e7)), int(round(lon * 1e7)), float(alt_m))
+        if not self._wait(lambda: cmd in acks, GIMBAL_ACK_S):
+            raise VehicleError(f"no COMMAND_ACK within {GIMBAL_ACK_S:.1f}s")
+        result = acks.pop(cmd)
+        if result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            raise VehicleError(result_name(result))
+        logger.info("home set to %.7f %.7f %.1f m", lat, lon, alt_m)
+
+    def compass_calibration(self, start):
+        """PREFLIGHT_CALIBRATION: param2 = 1 starts the magnetometer.
+
+        Every param zero is the cancel, and it is not the commander that
+        reads it but the calibration itself, between its sampling steps.
+        Sent in the middle of one it is answered TEMPORARILY_REJECTED, by
+        the commander whose worker is busy, and nothing stops — so the
+        cancel goes out again until PX4 prints "[cal] calibration
+        cancelled", the same words that prove a start took.
+        """
+        if self.armed():
+            raise VehicleError("motors running")
+        cmd = mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION
+        word = "started" if start else "cancelled"
+        t0 = time.time()
+
+        def said_so():
+            return any(word in t for t in self.link.texts_since(t0))
+
+        reason = "nothing came back"
+        for _ in range(1 if start else CALIBRATION_TRIES):
+            ok, reason = self._acked(cmd, 0, 1 if start else 0, timeout=CALIBRATION_S)
+            if ok or self._wait(said_so, CALIBRATION_S if start else 0.5):
+                logger.info("mag calibration %s", word)
+                return
+        raise VehicleError(refusal(reason))
+
+    def amsl(self):
+        """Altitude above mean sea level, from the pump's last fix."""
+        msg = self.link.m.messages.get("GLOBAL_POSITION_INT") if self.link.ready() else None
+        return None if msg is None else msg.alt / 1000.0
+
+    def _take_gimbal(self):
+        """Become the gimbal manager's primary controller.
+
+        PX4 denies every pitchyaw command from anyone else, and an aircraft
+        with no gimbal module running never answers at all: the commander
+        leaves both gimbal commands to a module that is not there.
+        """
+        ok, reason = self._acked(
+            mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
+            self.link.m.mav.srcSystem, self.link.m.mav.srcComponent, -1, -1,
+            0, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
+        self._gimbal = ok
+        if not ok:
+            raise VehicleError(refusal(reason))
