@@ -11,6 +11,7 @@ from cyberwave_edge_mavlink_driver.driver import MavlinkDriver
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_GRACE_S = 4.0   # what the rest of the shutdown gets after ours
+TICK_STALL_S = 60.0      # ticks come at 10 Hz; a minute of silence is a hang
 CW_DRIVER = Path(__file__).resolve().parents[1] / "cw-driver.yml"
 CW_DRIVER_HEADER = ("Generated: python -m cyberwave_edge_mavlink_driver.main "
                     "--write-cw-driver\nEdit contract.py and define_interface, "
@@ -27,6 +28,21 @@ def leave_after_shutdown(driver):
     driver.stopping.wait()
     time.sleep(SHUTDOWN_GRACE_S)
     os._exit(0)
+
+
+def leave_when_stalled(driver, exit=os._exit, now=time.time, poll_s=5.0):
+    """End the process when the tick loop has gone quiet.
+
+    An SDK REST call with no timeout can block the event loop for as long as
+    a dead TCP path takes to give up (a WiFi switch did it on the bench).
+    The process then looks alive and publishes nothing, so nothing restarts
+    it. Ticks stop in that case; systemd starts us again when we leave.
+    """
+    while not driver.stopping.wait(poll_s):
+        ticked = driver.ticked_at
+        if ticked and now() - ticked > TICK_STALL_S:
+            logger.error("no tick for %.0fs, leaving so we get restarted", now() - ticked)
+            exit(3)
 
 
 def main():
@@ -49,6 +65,8 @@ def main():
         driver = MavlinkDriver()
         threading.Thread(target=leave_after_shutdown, args=(driver,),
                          name="exit", daemon=True).start()
+        threading.Thread(target=leave_when_stalled, args=(driver,),
+                         name="stall", daemon=True).start()
         driver.run()
     except Exception:
         # non-zero so systemd or Edge Core restarts us

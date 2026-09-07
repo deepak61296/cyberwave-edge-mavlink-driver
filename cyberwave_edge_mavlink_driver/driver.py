@@ -69,6 +69,7 @@ class MavlinkDriver(BaseDriver):
         self._pump = None
         self._pump_stop = threading.Event()
         self.stopping = threading.Event()   # the shutdown has begun
+        self.ticked_at = None               # last on_tick, for the stall watchdog
         super().__init__(params, twin=twin, **kwargs)
 
     @classmethod
@@ -169,6 +170,7 @@ class MavlinkDriver(BaseDriver):
 
     async def on_tick(self):
         now = time.time()
+        self.ticked_at = now
         self.vehicle.tick()
         self._watch_link()
         if not self._running:   # a discrete verb has the aircraft until it is done
