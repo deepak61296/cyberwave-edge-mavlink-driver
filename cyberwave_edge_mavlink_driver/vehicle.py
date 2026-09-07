@@ -80,7 +80,7 @@ class Vehicle:
 
     def reboot(self):
         if self.armed():
-            return False, "refused: the aircraft is armed"
+            return False, "motors running"
         return self._acked(mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 1)
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):

@@ -166,8 +166,20 @@ def test_kill_in_the_air_needs_force(driver):
     driver.link.state["alt"] = 3.0
     reply = send(driver, {"source_type": "tele", "command": "kill", "data": {}})
     assert reply["status"] == "error"
-    assert reply["reason"] == "refused: in the air, send force to cut the motors anyway"
+    assert reply["reason"] == "in air, send force to override"
     assert driver.vehicle.calls == []
+
+
+def test_disarm_in_the_air_needs_force(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "disarm", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "in air, send force to override"
+    assert driver.vehicle.calls == []
+    reply = send(driver, {"source_type": "tele", "command": "disarm", "data": {"force": True}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("set_armed", False, True)]
 
 
 def test_kill_in_the_air_with_force_cuts_the_motors(driver):

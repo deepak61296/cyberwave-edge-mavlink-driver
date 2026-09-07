@@ -131,7 +131,7 @@ def test_reboot_is_refused_while_armed():
     link.state["armed"] = True
     ok, reason = Vehicle(link).reboot()
     assert ok is False
-    assert reason == "refused: the aircraft is armed"
+    assert reason == "motors running"
     assert link.m.sent == []
 
 

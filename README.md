@@ -37,8 +37,8 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 | discrete | `brake`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
 | discrete | `stop` (registered by the SDK base) | zero the sticks | zero the sticks, then Hold |
 | discrete | `kill` | force disarm, refused in the air without `force` | same |
-| discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused while armed) | same |
-| discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit | same; force arm is not possible over MAVLink |
+| discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused with the motors running) | same |
+| discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit; `disarm` is refused in the air without `force` | same; force arm is not possible over MAVLink |
 | continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints at 10 Hz, in GUIDED | same, in OFFBOARD |
 
 Every discrete command returns `(ok, reason)` from the autopilot backend, so
