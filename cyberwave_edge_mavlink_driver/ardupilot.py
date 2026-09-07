@@ -32,6 +32,12 @@ def _rate(here, there, seconds):
     return NAN if there != there else (there - here) / seconds
 
 
+def _both(a, b, spare):
+    """ArduPilot refuses a pitch/yaw pair with one half NaN, so an axis
+    nobody commanded is filled with what leaves that axis where it is."""
+    return (spare[0] if a != a else a, spare[1] if b != b else b)
+
+
 class ArduPilot(Vehicle):
 
     name = "ardupilot"
@@ -129,7 +135,7 @@ class ArduPilot(Vehicle):
             pitch_deg, yaw_deg = _add(here[0], pitch_deg), _add(here[1], yaw_deg)
         if duration_s and duration_s > 0:
             return self._slew(pitch_deg, yaw_deg, min(duration_s, MAX_SLEW_S))
-        self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
+        self._angles(pitch_deg, yaw_deg)
 
     def _slew(self, pitch_deg, yaw_deg, seconds):
         """A move that takes the time it was asked to take.
@@ -139,23 +145,29 @@ class ArduPilot(Vehicle):
         """
         here = self.gimbal_attitude()
         if here is None:
-            return self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
-        self._pitchyaw(NAN, NAN, _rate(here[0], pitch_deg, seconds),
-                       _rate(here[1], yaw_deg, seconds))
+            return self._angles(pitch_deg, yaw_deg)
+        self.gimbal_rate(_rate(here[0], pitch_deg, seconds),
+                         _rate(here[1], yaw_deg, seconds))
         self.abort.wait(seconds)
-        self._pitchyaw(pitch_deg, yaw_deg, NAN, NAN)
+        self._angles(pitch_deg, yaw_deg)
 
     def gimbal_rate(self, pitch_dps, yaw_dps):
         # streamed from the tick, so it sends and does not wait for the ack
+        pitch_dps, yaw_dps = _both(pitch_dps, yaw_dps, (0.0, 0.0))
         self.link.send_command(mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
                                NAN, NAN, pitch_dps, yaw_dps, 0, 0, 0)
 
-    def _pitchyaw(self, pitch_deg, yaw_deg, pitch_dps, yaw_dps):
-        """The gimbal protocol v2 verb. NaN in any of the four leaves that
-        axis where it is; the mount takes the angles or the rates, not both."""
+    def _angles(self, pitch_deg, yaw_deg):
+        """The gimbal protocol v2 verb, carrying the two angles.
+
+        An axis the caller left out keeps the angle the gimbal already holds,
+        because the firmware takes the pair or nothing.
+        """
+        pitch_deg, yaw_deg = _both(pitch_deg, yaw_deg,
+                                   self.gimbal_attitude() or (0.0, 0.0))
         ok, reason = self._acked(
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
-            pitch_deg, yaw_deg, pitch_dps, yaw_dps, 0, 0, 0)
+            pitch_deg, yaw_deg, NAN, NAN, 0, 0, 0)
         if not ok:
             raise Refused(reason)
 

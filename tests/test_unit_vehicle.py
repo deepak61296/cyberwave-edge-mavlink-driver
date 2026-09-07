@@ -345,12 +345,14 @@ def test_ardupilot_points_the_gimbal_with_the_v2_command():
     assert all(math.isnan(p) for p in sent[6:8])    # and no rates
 
 
-def test_ardupilot_leaves_an_axis_nobody_asked_for_alone():
+def test_ardupilot_keeps_an_axis_nobody_asked_for_where_it_is():
+    """The firmware takes the pitch/yaw pair or nothing, so the half the
+    caller left out is filled with the angle the gimbal already holds."""
     link = link_with()
     link.m._on_send = accepting(link)
+    link.state["gimbal"] = (-5.0, 12.0)
     ArduPilot(link).gimbal_point(-20.0, NAN, True)
-    assert link.m.sent[-1][4] == -20.0
-    assert math.isnan(link.m.sent[-1][5])
+    assert link.m.sent[-1][4:6] == (-20.0, 12.0)
 
 
 def test_ardupilot_relative_adds_to_where_the_gimbal_is():
@@ -358,8 +360,7 @@ def test_ardupilot_relative_adds_to_where_the_gimbal_is():
     link.m._on_send = accepting(link)
     link.state["gimbal"] = (-30.0, 5.0)
     ArduPilot(link).gimbal_point(15.0, NAN, False)
-    assert link.m.sent[-1][4] == -15.0      # -30 + 15
-    assert math.isnan(link.m.sent[-1][5])   # yaw was not asked for, still is not
+    assert link.m.sent[-1][4:6] == (-15.0, 5.0)     # -30 + 15, and yaw as it was
 
 
 def test_ardupilot_cannot_move_relative_to_a_gimbal_it_cannot_read():
@@ -376,7 +377,7 @@ def test_ardupilot_takes_the_time_a_duration_asks_for():
     link.state["gimbal"] = (0.0, 0.0)
     ArduPilot(link).gimbal_point(-40.0, NAN, True, duration_s=0.2)
     first, last = link.m.sent[0], link.m.sent[-1]
-    assert math.isnan(first[4]) and first[6] == -200.0   # 40 degrees in 0.2 s
+    assert math.isnan(first[4]) and first[6:8] == (-200.0, 0.0)  # 40 deg in 0.2 s
     assert last[4] == -40.0 and math.isnan(last[6])
 
 
@@ -390,6 +391,12 @@ def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
     assert sent[2] == PITCHYAW
     assert all(math.isnan(p) for p in sent[4:6])
     assert sent[6:8] == (-30.0, 0.0)
+
+
+def test_ardupilot_gimbal_rate_zeroes_the_axis_nobody_asked_for():
+    link = link_with()
+    ArduPilot(link).gimbal_rate(-15.0, NAN)
+    assert link.m.sent[-1][6:8] == (-15.0, 0.0)
 
 
 def test_ardupilot_gimbal_refusal_carries_the_fc_result():
