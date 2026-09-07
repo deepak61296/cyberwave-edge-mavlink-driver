@@ -188,3 +188,5 @@ snippet above.
 
 Scaffolded with [cyberwave-os/driver-skill](https://github.com/cyberwave-os/driver-skill).
 Apache 2.0.
+
+How it is packaged and deployed: [docs/PACKAGING.md](docs/PACKAGING.md).
