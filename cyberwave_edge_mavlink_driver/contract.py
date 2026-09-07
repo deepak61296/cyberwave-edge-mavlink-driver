@@ -8,6 +8,9 @@ DISCRETE = (
     "arm", "disarm", "brake", "kill",
 )
 
+# These do not queue: whatever discrete verb is running gives way to them.
+URGENT = ("kill", "brake", "emergency_stop", "stop")
+
 # Stick commands: name -> body frame (vx, vy, vz, yaw_rate) unit vector.
 # The body frame is NED, so +z is down.
 CONTINUOUS = {

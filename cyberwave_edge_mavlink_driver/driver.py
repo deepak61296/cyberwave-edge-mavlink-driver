@@ -196,9 +196,7 @@ class MavlinkDriver(BaseDriver):
         self._stick_at = time.time()
 
     async def _on_stop_cmd(self, envelope):
-        if self._accepts(envelope):
-            await asyncio.to_thread(self._release_sticks)
-            self._reply("stop", True, "")
+        await self._on_command(envelope)
         await super()._on_stop_cmd(envelope)
 
     def _off_tick(self, work):
@@ -226,7 +224,15 @@ class MavlinkDriver(BaseDriver):
 
     def _run(self, envelope):
         cmd, data = envelope.get("command"), envelope.get("data") or {}
+        if cmd in contract.URGENT:
+            self.vehicle.abort.set()    # whatever is running gives way
         with self._lock:
+            if cmd in contract.URGENT:
+                self.vehicle.abort.clear()
+            elif self.vehicle.abort.is_set():
+                # an urgent verb is queued behind us; do not make it wait
+                self._reply(cmd, False, "superseded")
+                return
             logger.info("executing %s %s", cmd, data or "")
             # the contract: a discrete command shuts stick input down first
             self._release_sticks()
@@ -235,10 +241,14 @@ class MavlinkDriver(BaseDriver):
             except Exception as exc:
                 logger.exception("command %s failed", cmd)
                 ok, reason = False, f"{type(exc).__name__}: {exc}"
+            if not ok and self.vehicle.abort.is_set():
+                reason = "superseded"
             self._reply(cmd, ok, reason)
 
     def _execute(self, cmd, data):
         v = self.vehicle
+        if cmd == "stop":
+            return True, ""     # the sticks are already released; that is all stop asks
         if cmd == "takeoff":
             return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))
         if cmd == "land":

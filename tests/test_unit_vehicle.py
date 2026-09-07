@@ -151,6 +151,17 @@ def test_in_air_prefers_the_landed_state_over_altitude():
     assert not v.in_air()
 
 
+def test_a_wait_gives_way_to_abort():
+    v = Vehicle(link_with())
+    v.abort.set()
+    t0 = time.time()
+    assert v._wait(lambda: False, 5.0) is False
+    assert v._wait(lambda: True, 5.0) is True      # what already holds still counts
+    ok, reason = v.set_armed(True, timeout=5.0)
+    assert not ok
+    assert time.time() - t0 < 0.5
+
+
 # --- ArduPilot --------------------------------------------------------
 
 def test_ardupilot_mode_name_comes_from_the_heartbeat():

@@ -30,18 +30,19 @@ class ArduPilot(Vehicle):
         if want is None:
             return False, f"unknown mode {name}"
         t0 = time.time()
-        next_send = 0.0
-        while time.time() < t0 + timeout:
-            if self.link.state["mode"] == want:
-                return True, ""
-            if time.time() >= next_send:
-                self.link.m.set_mode(name)
-                next_send = time.time() + 1.0
-            time.sleep(0.1)
-        # the autopilot usually says why on the text channel; prefer its words
-        why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
-        logger.error("could not enter mode %s: %s", name, why)
-        return False, why or f"could not enter {name} within {timeout:.0f}s"
+
+        def in_mode():
+            return self.link.state["mode"] == want
+
+        while not in_mode():
+            if self.abort.is_set() or time.time() > t0 + timeout:
+                # the autopilot usually says why on the text channel; prefer its words
+                why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
+                logger.error("could not enter mode %s: %s", name, why)
+                return False, why or f"could not enter {name} within {timeout:.0f}s"
+            self.link.m.set_mode(name)
+            self._wait(in_mode, min(1.0, t0 + timeout - time.time()))
+        return True, ""
 
     def set_armed(self, arm, force=False, timeout=5.0):
         # LAND is not armable, the bench found out
@@ -56,17 +57,18 @@ class ArduPilot(Vehicle):
         end = time.time() + ARM_RETRY_S
         while True:
             ok, reason = self.set_armed(True, timeout=3.0)
-            if ok or time.time() > end:
+            if ok or self.abort.is_set() or time.time() > end:
                 break
         if not ok:
             return False, reason
         cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
         for _ in range(5):
-            self.link.send_command(cmd, 0, 0, 0, 0, 0, 0, altitude)
-            if self.link.wait_ack(cmd) == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            ok, reason = self._acked(cmd, 0, 0, 0, 0, 0, 0, altitude)
+            if ok:
                 logger.info("takeoff accepted, %.1f m", altitude)
                 return True, ""
-            time.sleep(2.0)
+            if self.abort.wait(2.0):    # the pause between tries, unless cut short
+                break
         return False, "NAV_TAKEOFF not accepted"
 
     def land(self):

@@ -227,6 +227,31 @@ def test_discrete_command_releases_the_sticks_first(driver):
     assert driver.vehicle.calls[0] == ("release",)
 
 
+@pytest.mark.parametrize("urgent", contract.URGENT)
+def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
+    """A kill must not queue behind a takeoff that waits half a minute."""
+    v, in_takeoff = driver.vehicle, threading.Event()
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 30.0)
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+    t.start()
+    assert in_takeoff.wait(5.0)
+    t0 = time.time()
+    reply = send(driver, {"source_type": "tele", "command": urgent, "data": {}})
+    assert time.time() - t0 < 1.0
+    assert reply["command"] == urgent
+    assert reply["status"] == "ok"
+    t.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["takeoff"]["reason"] == "superseded"
+
+
 # --- sticks -------------------------------------------------------------
 
 def test_stick_vector_from_a_burst(driver):
