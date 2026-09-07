@@ -555,6 +555,30 @@ def test_quiet_attitude_asks_for_streams_again_but_not_every_tick(driver):
     assert len(driver.stream_requests) == 1
 
 
+def test_the_link_going_quiet_and_coming_back_each_raise_one_alert(driver):
+    alerts = []
+    driver.create_twin_alert = lambda name, **kw: alerts.append((name, kw["severity"]))
+    asyncio.run(driver.on_tick())
+    assert alerts == []
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert [severity for _, severity in alerts] == ["error"]
+    driver.link.state["last_heartbeat"] = time.time()
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert [severity for _, severity in alerts] == ["error", "info"]
+    assert alerts[1][0] == "MAVLink link back"
+
+
+def test_a_failing_alert_does_not_break_the_tick(driver):
+    def boom(*a, **kw):
+        raise RuntimeError("no route to the platform")
+    driver.create_twin_alert = boom
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    asyncio.run(driver.on_tick())
+
+
 def test_lost_broker_flags_the_reconnect_loop(driver):
     asyncio.run(driver.on_tick())
     assert not driver._connection_lost.is_set()

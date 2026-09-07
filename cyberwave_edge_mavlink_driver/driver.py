@@ -64,6 +64,7 @@ class MavlinkDriver(BaseDriver):
         self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
         self._sticks_live = False
         self._streams_at = 0.0
+        self._link_up = True            # last state we raised an alert about
         self._pump = None
         self._pump_stop = threading.Event()
         self.stopping = threading.Event()   # the shutdown has begun
@@ -168,6 +169,7 @@ class MavlinkDriver(BaseDriver):
     async def on_tick(self):
         now = time.time()
         self.vehicle.tick()
+        self._watch_link()
         if not self._running:   # a discrete verb has the aircraft until it is done
             self._tick_sticks(now)
         # a cold-booted autopilot can miss the first stream request
@@ -177,6 +179,35 @@ class MavlinkDriver(BaseDriver):
             self.link.request_streams()
         if not self.client.mqtt.connected:
             self._connection_lost.set()
+
+    def _watch_link(self):
+        """One alert when the aircraft stops talking, one when it is back."""
+        up = self.link.connected()
+        if up == self._link_up:
+            return
+        self._link_up = up
+        if up:
+            logger.info("mavlink link back after %d reopen(s)", self.link.reopens)
+            self._link_alert("MAVLink link back",
+                             "The autopilot is sending heartbeats again.", "info",
+                             auto_resolve_after=60.0)
+        else:
+            logger.warning("mavlink link lost")
+            self._link_alert("MAVLink link lost",
+                             "No heartbeat from the autopilot; the aircraft "
+                             "takes no commands until it is back.", "error")
+
+    def _link_alert(self, name, description, severity, **kwargs):
+        """Tell the twin. Called from the tick, so the SDK hands the REST
+        request to a thread of its own and we never wait on it here."""
+        try:
+            self.create_twin_alert(name, description=description,
+                                   alert_type="mavlink_link", severity=severity,
+                                   metadata={"connection": self.link.connection_string,
+                                             "reopens": self.link.reopens},
+                                   **kwargs)
+        except Exception:
+            logger.warning("could not raise the link alert")
 
     def _tick_sticks(self, now):
         """Stream a fresh stick; release once it has expired."""

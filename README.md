@@ -86,6 +86,9 @@ direction "both"). `status` is unchanged; the rest is additive:
 - `cyberwave/twin/<uuid>/telemetry`: `{"type": "vehicle_state", "armed":
   bool, "mode": str, "flight_state": str, "motors_pwm": [...]}`, on every
   change and at least once a second
+- twin alerts: one `mavlink_link` alert at severity `error` when the
+  autopilot stops sending heartbeats, one at `info` when it is back. Only
+  the two transitions, and the REST call runs off the tick loop
 
 Contract behaviors honored:
 
