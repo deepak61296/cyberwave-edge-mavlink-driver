@@ -10,38 +10,34 @@ from .vehicle import Vehicle
 logger = logging.getLogger(__name__)
 
 ARM_RETRY_S = 30.0   # takeoff keeps asking this long; pre-arm can take a while
+ARM_TRY_S = 3.0      # each ask waits this long for the armed bit
 
 
 class ArduPilot(Vehicle):
 
     name = "ardupilot"
 
+    def __init__(self, link):
+        super().__init__(link)
+        # the table for the system we accepted; pymavlink's own mode_mapping()
+        # follows whichever heartbeat it saw first, which differs on a shared link
+        kind = link.m.sysid_state[link.m.target_system].mav_type
+        self.modes = mavutil.mode_mapping_byname(kind) or {}
+        self._names = {v: k for k, v in self.modes.items()}
+
     def mode_name(self):
-        by_number = {v: k for k, v in self.link.mode_names().items()}
         mode = self.link.state["mode"]
-        return by_number.get(mode, f"MODE({mode})")
+        return self._names.get(mode, f"MODE({mode})")
 
     def returning(self):
         return self.mode_name() in ("RTL", "SMART_RTL")
 
     def set_mode(self, name, timeout=30.0):
-        """Ask for a mode once a second until the heartbeat shows it."""
-        want = self.link.mode_names().get(name)
+        """Ask for a mode by name until the heartbeat shows it."""
+        want = self.modes.get(name)
         if want is None:
             return False, f"unknown mode {name}"
-        t0 = time.time()
-        next_send = 0.0
-        while time.time() < t0 + timeout:
-            if self.link.state["mode"] == want:
-                return True, ""
-            if time.time() >= next_send:
-                self.link.m.set_mode(name)
-                next_send = time.time() + 1.0
-            time.sleep(0.1)
-        # the autopilot usually says why on the text channel; prefer its words
-        why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
-        logger.error("could not enter mode %s: %s", name, why)
-        return False, why or f"could not enter {name} within {timeout:.0f}s"
+        return self._set_mode(name, want, (want,), timeout)
 
     def set_armed(self, arm, force=False, timeout=5.0):
         # LAND is not armable, the bench found out
@@ -55,18 +51,19 @@ class ArduPilot(Vehicle):
             return ok, reason
         end = time.time() + ARM_RETRY_S
         while True:
-            ok, reason = self.set_armed(True, timeout=3.0)
-            if ok or time.time() > end:
+            ok, reason = self.set_armed(True, timeout=ARM_TRY_S)
+            if ok or self.abort.is_set() or time.time() > end:
                 break
         if not ok:
             return False, reason
         cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
         for _ in range(5):
-            self.link.send_command(cmd, 0, 0, 0, 0, 0, 0, altitude)
-            if self.link.wait_ack(cmd) == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            ok, reason = self._acked(cmd, 0, 0, 0, 0, 0, 0, altitude)
+            if ok:
                 logger.info("takeoff accepted, %.1f m", altitude)
                 return True, ""
-            time.sleep(2.0)
+            if self.abort.wait(2.0):    # the pause between tries, unless cut short
+                break
         return False, "NAV_TAKEOFF not accepted"
 
     def land(self):

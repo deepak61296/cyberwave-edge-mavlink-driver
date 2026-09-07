@@ -11,6 +11,7 @@ import time
 
 from pymavlink import mavutil
 
+from .link import BODY_NED
 from .vehicle import Vehicle
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ AUTO_SUB = {"READY": 1, "TAKEOFF": 2, "LOITER": 3, "MISSION": 4, "RTL": 5, "LAND
 
 AUTO = MAIN["AUTO"]
 TAKEOFF_CONFIRM_S = 20.0
+TAKEOFF_TOLERANCE_M = 0.5   # PX4 settles a little under MIS_TAKEOFF_ALT
+GCS_HEARTBEAT_S = 1.0
 
 
 def custom_mode(main, sub=0):
@@ -42,6 +45,24 @@ def mode_name(custom):
 class PX4(Vehicle):
 
     name = "px4"
+    # PX4's receiver takes only LOCAL_NED and BODY_NED; a body-offset frame is
+    # dropped with "coordinate frame 9 unsupported" and OFFBOARD never engages
+    velocity_frame = BODY_NED
+
+    def __init__(self, link):
+        super().__init__(link)
+        self._heartbeat_at = 0.0
+
+    def tick(self):
+        # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
+        # the last 2.5 s, so without this we never learn why anything failed.
+        # ArduPilot must not get it: there a GCS heartbeat arms its GCS failsafe.
+        now = time.time()
+        if now - self._heartbeat_at >= GCS_HEARTBEAT_S:
+            self._heartbeat_at = now
+            self.link.m.mav.heartbeat_send(
+                mavutil.mavlink.MAV_TYPE_GCS,
+                mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
     def mode_name(self):
         mode = self.link.state["mode"]
@@ -50,22 +71,11 @@ class PX4(Vehicle):
     def returning(self):
         return self.link.state["mode"] == custom_mode(AUTO, AUTO_SUB["RTL"])
 
-    def set_mode(self, main, sub=0, timeout=10.0):
-        """DO_SET_MODE once a second until the heartbeat shows it."""
+    def set_mode(self, main, sub=0, timeout=10.0, meanwhile=None):
+        """DO_SET_MODE(main, sub), confirmed on the heartbeat."""
         want = custom_mode(main, sub)
-        t0 = time.time()
-        next_send = 0.0
-        while time.time() < t0 + timeout:
-            if self.link.state["mode"] == want:
-                return True, ""
-            if time.time() >= next_send:
-                self.link.send_command(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
-                                       1, main, sub, fill=NAN)
-                next_send = time.time() + 1.0
-            time.sleep(0.1)
-        why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
-        logger.error("could not enter %s: %s", mode_name(want), why)
-        return False, why or f"could not enter {mode_name(want)} within {timeout:.0f}s"
+        return self._set_mode(mode_name(want), want, (main, sub), timeout,
+                              fill=NAN, meanwhile=meanwhile)
 
     def set_armed(self, arm, force=False, timeout=5.0):
         if arm and force:
@@ -85,12 +95,17 @@ class PX4(Vehicle):
         ok, reason = self.set_armed(True)
         if not ok:
             return ok, reason
-        end = time.time() + TAKEOFF_CONFIRM_S
-        while time.time() < end:
-            if self.in_air():
-                logger.info("airborne, climbing to %.1f m", altitude)
-                return True, ""
-            time.sleep(0.2)
+        # PX4 calls the landed state in_air the moment the climb starts, so
+        # that alone hands back an aircraft still on the ground: wait for the
+        # altitude too, or the next verb runs at zero and nothing moves
+        want = altitude - TAKEOFF_TOLERANCE_M
+        if self._wait(lambda: self.in_air() and self.link.state["alt"] >= want,
+                      TAKEOFF_CONFIRM_S):
+            logger.info("airborne at %.1f m", self.link.state["alt"])
+            return True, ""
+        if self.in_air():
+            return False, (f"still climbing, {self.link.state['alt']:.1f} m of "
+                           f"{altitude:.1f} m after {TAKEOFF_CONFIRM_S:.0f}s")
         return False, "armed but never left the ground"
 
     def land(self):
@@ -112,7 +127,14 @@ class PX4(Vehicle):
         self.set_mode(MAIN["OFFBOARD"], timeout=3.0)
 
     def release_sticks(self):
-        self.send_velocity_body(0, 0, 0, 0)
-        # OFFBOARD fails over a second after the stream stops; leave it on our terms
+        """Leave OFFBOARD for Hold with the zeros still flowing.
+
+        PX4 fails over a second after the setpoint stream stops, and on the
+        bench that ended in an RTL nobody asked for; the stream must outlive
+        the mode change.
+        """
+        def zero():
+            self.send_velocity_body(0, 0, 0, 0)
+        zero()
         if self.link.state["mode"] == custom_mode(MAIN["OFFBOARD"]):
-            self.hold()
+            self.set_mode(AUTO, AUTO_SUB["LOITER"], timeout=3.0, meanwhile=zero)

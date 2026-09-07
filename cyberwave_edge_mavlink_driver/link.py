@@ -20,6 +20,10 @@ HEARTBEAT_TIMEOUT_S = 3.0
 REOPEN_BACKOFF_S = 1.0      # let a rebooting autopilot get its port back
 STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 
+# setpoint frames: ArduPilot takes body-offset, PX4 only takes these two
+BODY_OFFSET_NED = mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
+BODY_NED = mavutil.mavlink.MAV_FRAME_BODY_NED
+
 # HEARTBEAT types that are never the aircraft
 NON_VEHICLE_HEARTBEAT_TYPES = frozenset({
     mavutil.mavlink.MAV_TYPE_GCS,
@@ -174,10 +178,6 @@ class MavlinkLink:
         """True when there is a handle we are allowed to send on."""
         return self.m is not None
 
-    def mode_names(self):
-        """The autopilot's mode table, empty while the link is being rebuilt."""
-        return (self.m.mode_mapping() or {}) if self.ready() else {}
-
     def close(self):
         # unusable first: a send into the gap would be addressed to everyone
         m, self.m = self.m, None
@@ -309,11 +309,10 @@ class MavlinkLink:
             time.sleep(0.05)
         return None
 
-    def send_velocity_body(self, vx, vy, vz, yaw_rate):
+    def send_velocity_body(self, vx, vy, vz, yaw_rate, frame=BODY_OFFSET_NED):
         """One body-frame velocity setpoint. Callers stream this at 10 Hz."""
         if not self.ready():
             return
         self.m.mav.set_position_target_local_ned_send(
-            0, self.m.target_system, self.m.target_component,
-            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+            0, self.m.target_system, self.m.target_component, frame,
             VEL_MASK, 0, 0, 0, vx, vy, vz, 0, 0, 0, 0, yaw_rate)
