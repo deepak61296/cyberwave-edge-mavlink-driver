@@ -314,6 +314,16 @@ def test_position_and_rotation_payloads(driver):
     assert set(driver.telemetry.rotation()["rotation"]) == {"w", "x", "y", "z"}
 
 
+def test_a_disconnected_link_publishes_no_pose_at_all(driver):
+    """The last fix stays in the cache, and it must not go out as live."""
+    driver.link.state["ned"] = (1.0, 2.0, -3.0)
+    driver.link.state["attitude"] = (0.0, 0.0, 0.0)
+    assert driver.telemetry.position() is not None
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    assert driver.telemetry.position() is None
+    assert driver.telemetry.rotation() is None
+
+
 def test_props_spin_from_pwm(driver):
     assert PropSpin().payload(None) is None
     driver.link.state["servo_pwm"] = (1500, 1000, 65535, 1500)

@@ -69,6 +69,10 @@ class Telemetry:
                                      self.vehicle.returning(), self.was_airborne)
 
     def position(self):
+        # the state cache keeps its last fix for ever, and a stale pose
+        # republished at 10 Hz reads as a live aircraft
+        if not self.link.connected():
+            return None
         pos = self.link.position_enu()
         if pos is None:
             return None
@@ -76,6 +80,8 @@ class Telemetry:
                 "source_type": "edge", "timestamp": time.time()}
 
     def rotation(self):
+        if not self.link.connected():
+            return None
         quat = self.link.attitude_quat_enu()
         if quat is None:
             return None

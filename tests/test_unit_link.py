@@ -63,8 +63,12 @@ class FakeMav:
         self.target_component = target_component
         self._queue = list(messages or [])
         self.sent = []
+        self.streams = []
+        self.closed = False
         self._on_send = on_send
-        self.mav = types.SimpleNamespace(command_long_send=self._command_long_send)
+        self.mav = types.SimpleNamespace(
+            command_long_send=self._command_long_send,
+            request_data_stream_send=lambda *a: self.streams.append(a))
 
     def _command_long_send(self, *args):
         self.sent.append(args)
@@ -73,6 +77,12 @@ class FakeMav:
 
     def recv_match(self, blocking=False, timeout=None):
         return self._queue.pop(0) if self._queue else None
+
+    def wait_heartbeat(self, timeout=None):
+        return self._queue.pop(0) if self._queue else None
+
+    def close(self):
+        self.closed = True
 
 
 def link_with(mav):
@@ -197,6 +207,46 @@ def test_a_chunk_without_its_head_is_dropped():
     link = link_with(FakeMav([statustext("t", chunk_seq=1)]))
     link.pump_once()
     assert link.texts_since(0) == []
+
+
+# --- a link the autopilot dropped -------------------------------------
+
+def link_at_eof(fresh, monkeypatch):
+    """A link whose socket hung up, with the next open handing back fresh."""
+    monkeypatch.setattr(link_module.mavutil, "mavlink_connection",
+                        lambda connection: fresh)
+    monkeypatch.setattr(link_module.time, "sleep", lambda seconds: None)
+    link = link_with(FakeMav())
+    link._note_eof()
+    return link
+
+
+def test_a_dead_link_is_reopened_and_the_streams_asked_for_again(monkeypatch):
+    fresh = FakeMav([FakeHeartbeat()])
+    link = link_at_eof(fresh, monkeypatch)
+    dead = link.m
+    link.state["last_heartbeat"] = time.time() - 10
+
+    assert link.pump_once(timeout=0.01) is None
+    assert link.reopens == 1
+    assert dead.closed
+    assert link.m is fresh
+    assert fresh.streams                          # 10 Hz asked for again
+    assert fresh.handle_eof == link._note_eof     # and the hook follows
+
+    assert link.connected()
+    assert link.pump_once(timeout=0.01) is None   # healthy, so no second one
+    assert link.reopens == 1
+
+
+def test_eof_alone_does_not_reopen_a_link_still_beating(monkeypatch):
+    fresh = FakeMav([FakeHeartbeat()])
+    link = link_at_eof(fresh, monkeypatch)
+    link.state["last_heartbeat"] = time.time()
+
+    assert link.pump_once(timeout=0.01) is None
+    assert link.reopens == 0
+    assert link.m is not fresh
 
 
 def test_send_command_pads_to_seven_and_drops_the_stale_ack():

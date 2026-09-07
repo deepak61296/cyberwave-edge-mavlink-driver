@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 VEL_MASK = 0b0000011111000111  # velocity + yaw rate, everything else ignored
 HEARTBEAT_TIMEOUT_S = 3.0
+REOPEN_BACKOFF_S = 1.0      # let a rebooting autopilot get its port back
 STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 
 # HEARTBEAT types that are never the aircraft
@@ -93,12 +94,24 @@ class MavlinkLink:
         self._texts_lock = threading.Lock()
         self._foreign_heartbeats = set()   # logged once each
         self._partial = None               # STATUSTEXT chunks still arriving
+        self._eof = False                  # the far end hung up
+        self.reopens = 0
 
     # -- connection ----------------------------------------------------
 
     def connect(self, timeout=60.0):
         logger.info("connecting to %s", self.connection_string)
+        self._open(timeout)
+        self.request_streams()
+
+    def _open(self, timeout):
+        """Open the socket and take the first heartbeat that is the aircraft."""
         self.m = mavutil.mavlink_connection(self.connection_string)
+        # pymavlink answers a dead socket with a print per read and keeps
+        # reading it, so take its hooks: they are the only word we get
+        self.m.handle_eof = self.m.handle_disconnect = self._note_eof
+        self._eof = False
+        self.autopilot = None
         # Behind mavlink-router the first heartbeat can carry sysid 0;
         # accepting it would turn every command into a broadcast.
         deadline = time.time() + timeout
@@ -108,12 +121,30 @@ class MavlinkLink:
                 self.m.target_system = hb.get_srcSystem()
                 self.m.target_component = hb.get_srcComponent()
                 self.autopilot = hb.autopilot
+                self.state["last_heartbeat"] = time.time()
                 break
         if self.autopilot is None:
             raise ConnectionError(f"no usable heartbeat on {self.connection_string}")
         logger.info("heartbeat: sys=%s comp=%s autopilot=%s",
                     self.m.target_system, self.m.target_component, self.autopilot)
+
+    def _note_eof(self):
+        """pymavlink's EOF hook, silent by design: it fires on every read."""
+        self._eof = True
+
+    def _reopen(self):
+        """Build the link again after the autopilot dropped it, e.g. a reboot."""
+        self.reopens += 1
+        logger.warning("link at EOF, reopening %s (attempt %d)",
+                       self.connection_string, self.reopens)
+        try:
+            self.close()
+        except Exception:
+            pass
+        time.sleep(REOPEN_BACKOFF_S)
+        self._open(timeout=30.0)
         self.request_streams()
+        logger.info("link back up, streams requested again")
 
     def request_streams(self):
         """Ask for what we read at 10 Hz, and the landed state at 2 Hz."""
@@ -150,7 +181,13 @@ class MavlinkLink:
         return False
 
     def pump_once(self, timeout=1.0):
-        """Receive one message, fold it into state, return its type."""
+        """Receive one message, fold it into state, return its type.
+
+        The pump is the only reader, so the reopen of a dead link lives here.
+        """
+        if self._eof and not self.connected():
+            self._reopen()
+            return None
         msg = self.m.recv_match(blocking=True, timeout=timeout)
         if msg is None:
             return None
