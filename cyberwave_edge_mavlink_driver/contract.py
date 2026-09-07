@@ -14,6 +14,12 @@ DISCRETE = (
 # verb sent during a burst would be cancelled by the burst's own tail.
 URGENT = ("kill", "brake", "emergency_stop")
 
+# Nothing to land, cancel or hold on a parked aircraft: these are refused
+# "not in air" while it is on the ground with the motors off. With the motors
+# running a hold is still a real mode change, so armed on the ground is fine.
+NEEDS_AIR = ("land", "return_to_home", "cancel_takeoff", "cancel_landing",
+             "cancel_return_to_home", "brake", "hover", "emergency_stop")
+
 # Stick commands: name -> body frame (vx, vy, vz, yaw_rate) unit vector.
 # The body frame is NED, so +z is down.
 CONTINUOUS = {

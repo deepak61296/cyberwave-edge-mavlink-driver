@@ -258,10 +258,13 @@ class MavlinkDriver(BaseDriver):
                 self._reply(cmd, False, "not connected")
                 return
             self._running, self._dropped = cmd, False
+            extra = None
             try:
                 # the contract: a discrete command shuts stick input down first
                 self._release_sticks()
-                ok, reason = self._execute(cmd, data)
+                # a verb may add fields of its own, as takeoff adds altitude_m
+                ok, reason, *rest = self._execute(cmd, data)
+                extra = rest[0] if rest else None
             except Exception as exc:
                 logger.exception("command %s failed", cmd)
                 ok, reason = False, f"{type(exc).__name__}: {exc}"
@@ -269,16 +272,20 @@ class MavlinkDriver(BaseDriver):
                 self._running = None
             if not ok and self.vehicle.abort.is_set():
                 reason = "superseded"
-            self._reply(cmd, ok, reason)
+            self._reply(cmd, ok, reason, extra)
 
     def _execute(self, cmd, data):
         v = self.vehicle
         if cmd == "stop":
             return True, ""     # the sticks are already released; that is all stop asks
+        if cmd in contract.NEEDS_AIR and not v.in_air() and not v.armed():
+            return False, "not in air"
         if cmd == "takeoff":
             if v.in_air():
                 return False, "already in air"
-            return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))
+            asked = float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT))
+            ok, reason = v.takeoff(asked)
+            return ok, reason, {"altitude_m": v.takeoff_altitude(asked)}
         if cmd == "land":
             return v.land()
         if cmd == "return_to_home":
@@ -299,15 +306,17 @@ class MavlinkDriver(BaseDriver):
             return v.set_home_here()
         if cmd == "reboot":
             return v.reboot()
-        return False, f"command {cmd!r} not implemented"
+        logger.warning("no handler for %s", cmd)
+        return False, "not supported on this vehicle"
 
-    def _reply(self, cmd, ok, reason):
+    def _reply(self, cmd, ok, reason, extra=None):
         """Answer on the command topic. status is the contract's field."""
         payload = {"status": "ok" if ok else "error", "ok": bool(ok), "command": cmd,
                    "reason": reason, "armed": self.vehicle.armed(),
                    "mode": self.vehicle.mode_name(),
                    "flight_state": self.telemetry.flight_state(),
                    "timestamp": time.time()}
+        payload.update(extra or {})
         try:
             self.client.mqtt.publish_command_message(self.twin_uuid, payload)
         except Exception:

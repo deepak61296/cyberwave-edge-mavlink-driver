@@ -70,6 +70,14 @@ class Vehicle:
         logger.warning("%s refused: %s", word, reason)
         return False, reason
 
+    def takeoff_altitude(self, asked):
+        """What the takeoff reply reports as altitude_m.
+
+        The altitude we asked for, unless the backend confirmed the climb
+        against a real reading and can say how high the aircraft got.
+        """
+        return asked
+
     def kill(self):
         """Motors off now, whatever the aircraft is doing."""
         logger.warning("force disarm sent")
