@@ -152,6 +152,15 @@ def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     assert driver.vehicle.calls[-1] == expected
 
 
+def test_takeoff_in_the_air_is_refused_before_the_backend_runs(driver):
+    driver.link.state["armed"] = True
+    driver.link.state["alt"] = 3.0
+    reply = send(driver, {"source_type": "tele", "command": "takeoff", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "already in air"
+    assert driver.vehicle.calls == []
+
+
 def test_kill_in_the_air_needs_force(driver):
     driver.link.state["armed"] = True
     driver.link.state["alt"] = 3.0

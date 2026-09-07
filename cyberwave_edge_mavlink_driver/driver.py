@@ -250,6 +250,8 @@ class MavlinkDriver(BaseDriver):
         if cmd == "stop":
             return True, ""     # the sticks are already released; that is all stop asks
         if cmd == "takeoff":
+            if v.in_air():
+                return False, "already in air"
             return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))
         if cmd == "land":
             return v.land()
