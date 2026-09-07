@@ -174,6 +174,31 @@ def test_attitude_is_timestamped():
     assert time.time() - link.state["last_attitude"] < 1.0
 
 
+def statustext(text, chunk_seq=0):
+    return FakeMessage("STATUSTEXT", text=text.encode(), severity=4,
+                       id=1, chunk_seq=chunk_seq)
+
+
+def test_short_statustext_arrives_whole():
+    link = link_with(FakeMav([statustext("Armed by external command")]))
+    link.pump_once()
+    assert link.texts_since(0) == ["Armed by external command"]
+
+
+def test_a_long_statustext_is_joined_from_its_chunks():
+    head = "Arming denied: Resolve system health failures firs"
+    link = link_with(FakeMav([statustext(head), statustext("t\t", chunk_seq=1)]))
+    link.pump_once()
+    link.pump_once()
+    assert link.texts_since(0) == ["Arming denied: Resolve system health failures first"]
+
+
+def test_a_chunk_without_its_head_is_dropped():
+    link = link_with(FakeMav([statustext("t", chunk_seq=1)]))
+    link.pump_once()
+    assert link.texts_since(0) == []
+
+
 def test_send_command_pads_to_seven_and_drops_the_stale_ack():
     mav = FakeMav()
     link = link_with(mav)
