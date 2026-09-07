@@ -15,18 +15,19 @@ aircraft in mind is the Mini 4 Pro.
 | `kill` | none | The in-air motor cut is a stick gesture on the remote controller and is not reachable from the SDK. Always `not supported on this vehicle` |
 | `emergency_stop` | zero the sticks, `disableVirtualStick()` | Cancel whatever automation is running and hover. It is not a motor cut, and must not be named after one |
 | `brake` | same as `emergency_stop` | Send `KeyStopTakeoff`, `KeyStopAutoLanding` or `KeyStopGoHome` first when one of those is in progress |
+| `hover` | same as `brake` | The SDK sends this one already, from the flying twin and from the flight handle, so a DJI driver receives it whether or not the catalog lists it |
 | `takeoff` | `KeyStartTakeoff` | Fixed 1.2 m. The `altitude` field is a request, and the reply carries `altitude_m` 1.2. Refused by the aircraft when the motors are already on, which is `already in air`. Climb higher afterwards with `ascend` |
 | `cancel_takeoff` | `KeyStopTakeoff` | Stops the climb and hovers at the current altitude |
-| `land` | `KeyStartAutoLanding`, then `KeyConfirmLanding` | Below 0.7 m the aircraft parks and raises `KeyIsLandingConfirmationNeeded`. The first `land` replies ok with `"pending_confirmation": true`, a second `land` sends the confirm |
+| `land` | `KeyStartAutoLanding`, then `KeyConfirmLanding` | Below 0.7 m the aircraft parks and raises `KeyIsLandingConfirmationNeeded`. The first `land` replies ok with `"pending_confirmation": true` and raises a Cyberwave alert, a second `land` sends the confirm |
 | `cancel_landing` | `KeyStopAutoLanding` | Hovers at the current altitude |
-| `return_to_home` | `KeyStartGoHome` | `KeyGoHomeStatus` carries the progress and gives the `returning` flight state |
-| `cancel_return_to_home` | `KeyStopGoHome` | |
+| `return_to_home` | `KeyStartGoHome`, then `KeyGoHomeConfirm(true)` | Same shape as `land`. Some firmwares ask the operator to confirm first, so the driver replies with `"pending_confirmation": true`, raises the alert, and a second `return_to_home` confirms. `KeyGoHomeStatus` carries the progress and gives the `returning` flight state |
+| `cancel_return_to_home` | `KeyStopGoHome`, or `KeyGoHomeConfirm(false)` | The confirm key with false is the one to send while the aircraft is parked on the prompt. Once the return is under way it is `KeyStopGoHome`, and the driver picks by state |
 | `stop` | zero all four stick axes | Optionally `disableVirtualStick()` afterwards. Always accepted |
 | `set_home_here` | `KeyHomeLocationUsingCurrentAircraftLocation` | Refuse with `no position fix` below GPS signal level 4, which is where a home point can be recorded |
 | `set_home_location` | `KeyHomeLocation` set | Takes a `LocationCoordinate2D`, so the altitude field is ignored |
-| `gimbal_rotate` | `GimbalKey.KeyRotateByAngle` | Relative or absolute. Mini 4 Pro gimbal yaw is not independently steerable, so a yaw request is `not supported on this vehicle` |
+| `gimbal_rotate` | `GimbalKey.KeyRotateByAngle` | The SDK sends `mode`, the string `absolute` or `relative`, and an optional `duration` in seconds for a slow cinematic move. Mini 4 Pro gimbal yaw is not independently steerable, so a yaw request is `not supported on this vehicle` |
 | `set_gimbal_pitch` | `KeyRotateByAngle`, absolute | |
-| `gimbal_rotate_speed` | `KeyRotateBySpeed` | Units are 0.1 deg/s, so convert |
+| `gimbal_rotate_speed` | `KeyRotateBySpeed` | The SDK sends `pitch`, `roll` and `yaw` in 0.1 deg/s, the same unit the key takes, so pass them through. Range -3599 to 3599 |
 | `start_compass_calibration` | `KeyStartCompassCalibration` | Refuse with `motors running` while `KeyAreMotorsOn` |
 | `stop_compass_calibration` | `KeyStopCompassCalibration` | |
 | `reboot`, `reboot_aircraft` | `KeyRebootDevice` | One key for both names. Refuse with `motors running`, which DJI states as a hard rule |
@@ -44,7 +45,7 @@ watchdog and is not a DJI timeout.
 |---|---|---|
 | `move_forward`, `move_backward` | `pitch` | `rollPitchControlMode = VELOCITY` |
 | `strafe_left`, `strafe_right` | `roll` | same |
-| `ascend`, `descend` | `verticalThrottle` | `verticalControlMode = VELOCITY`, up to 6 m/s |
+| `ascend`, `descend` | `verticalThrottle` | `verticalControlMode = VELOCITY`, up to 6 m/s. The SDK's flight handle sends these two once with `distance` in metres and no `stop` after it |
 | `turn_left`, `turn_right` | `yaw` | `yawControlMode = ANGULAR_VELOCITY` |
 | `gimbal_pitch_up`, `gimbal_pitch_down` | `GimbalKey.KeyRotateBySpeed` | 0.1 deg/s units |
 
@@ -52,6 +53,13 @@ Roll and pitch velocity goes up to 23 m/s. Virtual stick is refused within about
 30 m of a height or distance limit, and an automatic takeoff interrupts it, so a
 driver enables it once the aircraft is airborne and enables it again after any
 authority change.
+
+Off-RC teleoperation is opt-in per twin, through
+`metadata.drivers.default.virtual_stick = true`. Without that flag the Android
+driver rejects every continuous verb with a `failed` status, and the command
+still publishes, so the aircraft simply does not move. `failed` is the DJI
+driver's word for what the contract calls `error`, and a reader of replies has
+to accept both.
 
 ## Mode and authority
 
@@ -108,4 +116,6 @@ The shared evidence is therefore the wire, not the vehicle. `tools/conformance.p
 in the project root drives a twin through the vocabulary from the platform side
 and prints pass or fail per verb. This driver is judged by it against SITL and a
 DJI driver against a real aircraft, and the two runs compare because neither one
-reads the driver's own code.
+reads the driver's own code. For a DJI run the script has to treat a `failed`
+reply as `error`, and the twin needs the `virtual_stick` flag set or every
+continuous verb fails on purpose.
