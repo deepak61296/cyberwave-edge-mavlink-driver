@@ -43,6 +43,7 @@ class FakeVehicle(Vehicle):
         self.calls = []
         self.result = (True, "")
         self.is_returning = False
+        self.gimbal = None
 
     def mode_name(self):
         return "STABILIZE"
@@ -88,6 +89,9 @@ class FakeVehicle(Vehicle):
 
     def gimbal_rate(self, pitch_dps, yaw_dps):
         self.calls.append(("rate", pitch_dps, yaw_dps))
+
+    def gimbal_attitude(self):
+        return self.gimbal
 
     def set_home(self, lat, lon, alt_m):
         self.calls.append(("set_home", lat, lon, alt_m))
@@ -831,6 +835,22 @@ def test_vehicle_state_payload_shape(driver):
     assert driver.telemetry.vehicle_state() is None               # unchanged, too soon
     driver.link.state["armed"] = True
     assert driver.telemetry.vehicle_state()["armed"] is True      # changed, goes out now
+
+
+def test_vehicle_state_carries_the_camera_angle_when_there_is_one(driver):
+    assert "gimbal_pitch" not in driver.telemetry.vehicle_state()
+    driver.vehicle.gimbal = (-45.25, 3.0)
+    payload = driver.telemetry.vehicle_state()
+    assert payload["gimbal_pitch"] == -45.25
+    assert payload["gimbal_yaw"] == 3.0
+
+
+def test_a_moving_camera_publishes_without_waiting_for_the_second(driver):
+    driver.vehicle.gimbal = (-45.0, 0.0)
+    assert driver.telemetry.vehicle_state()["gimbal_pitch"] == -45.0
+    assert driver.telemetry.vehicle_state() is None      # unchanged, too soon
+    driver.vehicle.gimbal = (-30.0, 0.0)
+    assert driver.telemetry.vehicle_state()["gimbal_pitch"] == -30.0
 
 
 def test_position_and_rotation_payloads(driver):

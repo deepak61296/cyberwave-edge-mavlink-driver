@@ -92,18 +92,25 @@ class Telemetry:
         return self.props.payload(self.link.state["servo_pwm"])
 
     def vehicle_state(self):
-        """Armed, mode and flight state: on change and at least once a second."""
+        """Armed, mode, flight state and the camera angle: on change and at
+        least once a second. A vehicle with no gimbal sends the fields at all."""
         if self.vehicle is None:
             return None
         now = time.time()
-        snapshot = (self.vehicle.armed(), self.vehicle.mode_name(), self.flight_state())
+        gimbal = self.vehicle.gimbal_attitude()
+        snapshot = (self.vehicle.armed(), self.vehicle.mode_name(), self.flight_state(),
+                    None if gimbal is None else tuple(round(a, 1) for a in gimbal))
         if snapshot == self._state_last and now - self._state_at < STATE_PERIOD_S:
             return None
         self._state_last, self._state_at = snapshot, now
         pwm = self.link.state["servo_pwm"]
-        return {"type": "vehicle_state", "armed": snapshot[0], "mode": snapshot[1],
-                "flight_state": snapshot[2], "motors_pwm": list(pwm) if pwm else None,
-                "source_type": "edge", "timestamp": now}
+        payload = {"type": "vehicle_state", "armed": snapshot[0], "mode": snapshot[1],
+                   "flight_state": snapshot[2], "motors_pwm": list(pwm) if pwm else None,
+                   "source_type": "edge", "timestamp": now}
+        if gimbal is not None:
+            payload["gimbal_pitch"] = round(gimbal[0], 2)
+            payload["gimbal_yaw"] = round(gimbal[1], 2)
+        return payload
 
     def summary(self):
         """The fields merged into the driver's own telemetry snapshots."""
