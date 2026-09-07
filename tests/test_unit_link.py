@@ -69,6 +69,7 @@ class FakeMav:
         self._on_send = on_send
         self.mav = types.SimpleNamespace(
             command_long_send=self._command_long_send,
+            command_int_send=lambda *a: self.sent.append(("int",) + a),
             request_data_stream_send=lambda *a: self.streams.append(a))
 
     def _command_long_send(self, *args):
@@ -214,6 +215,21 @@ def test_no_gimbal_no_angle():
 
 def test_pitch_yaw_from_a_level_quaternion():
     assert pitch_yaw_from_quaternion([1.0, 0.0, 0.0, 0.0]) == (0.0, 0.0)
+
+
+def test_a_home_point_goes_out_as_a_command_int():
+    """Lat and lon as float32 land half a metre off; as int32 they do not."""
+    mav = FakeMav()
+    link = link_with(mav)
+    link.state["acks"][179] = mavutil.mavlink.MAV_RESULT_ACCEPTED
+    link.send_command_int(179, 0, x=129716123, y=775946456, z=12.5)
+    sent = mav.sent[0]
+    assert sent[0] == "int"
+    assert sent[3] == mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+    assert sent[4] == 179
+    assert sent[7:11] == (0, 0.0, 0.0, 0.0)     # padded to four float params
+    assert sent[11:] == (129716123, 775946456, 12.5)
+    assert 179 not in link.state["acks"]        # the stale ack went with it
 
 
 def statustext(text, chunk_seq=0):

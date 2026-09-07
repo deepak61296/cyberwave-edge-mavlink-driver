@@ -129,6 +129,14 @@ class Vehicle:
     def _acked(self, cmd, *params, timeout=5.0):
         """Send one command and turn its ack into (ok, reason)."""
         self.link.send_command(cmd, *params)
+        return self._await_ack(cmd, timeout)
+
+    def _acked_int(self, cmd, *params, x=0, y=0, z=0.0, timeout=5.0):
+        """The same, as COMMAND_INT, for a command that carries coordinates."""
+        self.link.send_command_int(cmd, *params, x=x, y=y, z=z)
+        return self._await_ack(cmd, timeout)
+
+    def _await_ack(self, cmd, timeout=5.0):
         acks = self.link.state["acks"]
         if not self._wait(lambda: cmd in acks, timeout):
             return False, f"no COMMAND_ACK within {timeout:.1f}s"

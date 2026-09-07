@@ -15,6 +15,12 @@ AIRBORNE_S = 20.0       # how long the climb has to show after the ack
 AIRBORNE_ALT_M = 0.5    # off the ground, when the landed state says nothing
 MAX_SLEW_S = 30.0       # the longest a gimbal move may be asked to take
 
+# MAV_CMD_DO_START_MAG_CAL: every compass, no retry, save it when it finishes.
+# Saving is what makes the separate ACCEPT command unnecessary.
+MAG_CAL_ALL = 0
+MAG_CAL_NO_RETRY = 0
+MAG_CAL_AUTOSAVE = 1
+
 
 def _add(base, delta):
     """base + delta, leaving an axis nobody commanded uncommanded."""
@@ -150,5 +156,27 @@ class ArduPilot(Vehicle):
         ok, reason = self._acked(
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
             pitch_deg, yaw_deg, pitch_dps, yaw_dps, 0, 0, 0)
+        if not ok:
+            raise Refused(reason)
+
+    # -- home and compass -------------------------------------------------
+
+    def set_home(self, lat, lon, alt_m):
+        # as COMMAND_INT, so the coordinates arrive whole; param1 0 means the
+        # point is the one in x, y and z rather than where the aircraft is
+        ok, reason = self._acked_int(mavutil.mavlink.MAV_CMD_DO_SET_HOME, 0,
+                                     x=int(round(lat * 1e7)),
+                                     y=int(round(lon * 1e7)),
+                                     z=0.0 if alt_m is None else float(alt_m))
+        if not ok:
+            raise Refused(reason)
+
+    def compass_calibration(self, start):
+        if start:
+            ok, reason = self._acked(mavutil.mavlink.MAV_CMD_DO_START_MAG_CAL,
+                                     MAG_CAL_ALL, MAG_CAL_NO_RETRY, MAG_CAL_AUTOSAVE)
+        else:
+            ok, reason = self._acked(mavutil.mavlink.MAV_CMD_DO_CANCEL_MAG_CAL,
+                                     MAG_CAL_ALL)
         if not ok:
             raise Refused(reason)

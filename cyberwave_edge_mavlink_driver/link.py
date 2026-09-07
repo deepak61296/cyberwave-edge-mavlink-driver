@@ -319,6 +319,21 @@ class MavlinkLink:
         self.m.mav.command_long_send(
             self.m.target_system, self.m.target_component, cmd, 0, *params)
 
+    def send_command_int(self, cmd, *params, x=0, y=0, z=0.0,
+                         frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT):
+        """COMMAND_INT: four float params, then x and y in 1e7 degrees.
+
+        A home point sent as a float32 lands half a metre from where it was
+        asked for; as an int32 it lands on it.
+        """
+        if not self.ready():
+            return
+        params = list(params) + [0.0] * (4 - len(params))
+        self.state["acks"].pop(cmd, None)
+        self.m.mav.command_int_send(
+            self.m.target_system, self.m.target_component, frame, cmd, 0, 0,
+            *params, x, y, z)
+
     def wait_ack(self, cmd, timeout=5.0):
         """COMMAND_ACK result for cmd, or None if it never came."""
         end = time.time() + timeout

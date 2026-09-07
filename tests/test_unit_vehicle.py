@@ -28,6 +28,9 @@ from cyberwave_edge_mavlink_driver.vehicle import (  # noqa: E402
 ARM = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
 SET_MODE = mavutil.mavlink.MAV_CMD_DO_SET_MODE
 PITCHYAW = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW
+SET_HOME = mavutil.mavlink.MAV_CMD_DO_SET_HOME
+START_MAG_CAL = mavutil.mavlink.MAV_CMD_DO_START_MAG_CAL
+CANCEL_MAG_CAL = mavutil.mavlink.MAV_CMD_DO_CANCEL_MAG_CAL
 ACCEPTED = mavutil.mavlink.MAV_RESULT_ACCEPTED
 COPTER_MODES = mavutil.mode_mapping_byname(mavutil.mavlink.MAV_TYPE_QUADROTOR)
 
@@ -44,6 +47,7 @@ class FakeMav:
         self._on_send = on_send
         self.mav = types.SimpleNamespace(
             command_long_send=self._command_long_send,
+            command_int_send=self._command_int_send,
             set_position_target_local_ned_send=lambda *a: self.sent.append(("vel",) + a),
             param_set_send=lambda sys, comp, name, value, kind: self.params.__setitem__(name, value),
             heartbeat_send=lambda *a: self.sent.append(("hb",) + a),
@@ -54,8 +58,13 @@ class FakeMav:
         if self._on_send is not None:
             self._on_send(*args)
 
+    def _command_int_send(self, *args):
+        self.sent.append(("int",) + args)
+        if self._on_send is not None:
+            self._on_send(*args)
+
     def commands(self):
-        return [s[2] for s in self.sent if s[0] not in ("vel", "hb")]
+        return [s[2] for s in self.sent if s[0] not in ("vel", "hb", "int")]
 
     def heartbeats(self):
         return [s for s in self.sent if s[0] == "hb"]
@@ -322,7 +331,8 @@ def test_a_vehicle_with_no_gimbal_has_no_angle_to_report():
 
 def accepting(link):
     """An FC that takes whatever it is sent."""
-    return lambda *a: link.state["acks"].__setitem__(PITCHYAW, ACCEPTED)
+    return lambda *a: [link.state["acks"].__setitem__(c, ACCEPTED)
+                       for c in (PITCHYAW, SET_HOME, START_MAG_CAL, CANCEL_MAG_CAL)]
 
 
 def test_ardupilot_points_the_gimbal_with_the_v2_command():
@@ -393,6 +403,49 @@ def test_ardupilot_reads_the_gimbal_angle_off_the_link():
     link = link_with()
     link.state["gimbal"] = (-12.5, 3.0)
     assert ArduPilot(link).gimbal_attitude() == (-12.5, 3.0)
+
+
+def test_ardupilot_set_home_sends_whole_coordinates():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).set_home(12.9716123, 77.5946456, 12.5)
+    sent = link.m.sent[-1]
+    assert sent[0] == "int"
+    assert sent[4] == SET_HOME
+    assert sent[7] == 0                     # 0: the point given, not this one
+    assert sent[11:] == (129716123, 775946456, 12.5)
+
+
+def test_ardupilot_set_home_without_an_altitude_keeps_the_one_home_has():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).set_home(1.0, 2.0, None)
+    assert link.m.sent[-1][13] == 0.0       # zero above home is home's height
+
+
+def test_ardupilot_set_home_refusal_carries_the_fc_result():
+    link = link_with(lambda *a: link.state["acks"].__setitem__(
+        SET_HOME, mavutil.mavlink.MAV_RESULT_DENIED))
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
+        ArduPilot(link).set_home(1.0, 2.0, None)
+
+
+def test_ardupilot_compass_calibration_starts_and_cancels():
+    link = link_with()
+    link.m._on_send = accepting(link)
+    v = ArduPilot(link)
+    v.compass_calibration(True)
+    # every compass, no retry, and save it: nothing has to ACCEPT afterwards
+    assert link.m.sent[-1][2:8] == (START_MAG_CAL, 0, 0, 0, 1, 0.0)
+    v.compass_calibration(False)
+    assert link.m.sent[-1][2] == CANCEL_MAG_CAL
+
+
+def test_ardupilot_compass_calibration_refusal_carries_the_fc_result():
+    link = link_with(lambda *a: link.state["acks"].__setitem__(
+        START_MAG_CAL, mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED))
+    with pytest.raises(Refused, match="MAV_RESULT_TEMPORARILY_REJECTED"):
+        ArduPilot(link).compass_calibration(True)
 
 
 # --- PX4 --------------------------------------------------------------
