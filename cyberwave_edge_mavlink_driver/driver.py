@@ -281,7 +281,7 @@ class MavlinkDriver(BaseDriver):
             return v.return_to_home()
         # emergency_stop hovers: the same script must be safe on every
         # aircraft, and kill is the verb that says it cuts the motors
-        if cmd in ("brake", "emergency_stop", "cancel_takeoff",
+        if cmd in ("brake", "hover", "emergency_stop", "cancel_takeoff",
                    "cancel_landing", "cancel_return_to_home"):
             return v.hold()
         if cmd in ("disarm", "kill") and v.in_air() and not data.get("force", False):

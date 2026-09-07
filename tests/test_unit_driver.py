@@ -144,6 +144,7 @@ def test_arm_command_parsed_and_answered(driver):
     ("kill", {}, ("kill",)),
     ("emergency_stop", {}, ("hold",)),
     ("brake", {}, ("hold",)),
+    ("hover", {}, ("hold",)),
     ("cancel_landing", {}, ("hold",)),
     ("set_home_here", {}, ("set_home_here",)),
     ("reboot", {}, ("reboot",)),
@@ -492,7 +493,7 @@ def test_manifest_lists_every_verb_offline():
     manifest = MavlinkDriver.get_manifest(compiled=False)
     supported = manifest["mqtt"]["commands"]["supported"]
     names = [c["name"] if isinstance(c, dict) else c for c in supported]
-    for verb in ("arm", "disarm", "brake", "kill", "takeoff", "stop"):
+    for verb in ("arm", "disarm", "brake", "hover", "kill", "takeoff", "stop"):
         assert verb in names
     for verb in contract.CONTINUOUS:
         entry = supported[names.index(verb)]

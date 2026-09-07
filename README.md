@@ -34,7 +34,7 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 |---|---|---|---|
 | discrete | `takeoff` | GUIDED, arm, `NAV_TAKEOFF` | `AUTO.TAKEOFF` then arm, confirmed by the landed state |
 | discrete | `land`, `return_to_home` | LAND, RTL | `AUTO.LAND`, `AUTO.RTL` |
-| discrete | `brake`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
+| discrete | `brake`, `hover`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
 | discrete | `stop` (registered by the SDK base) | zero the sticks | zero the sticks, then Hold |
 | discrete | `kill` | force disarm, refused in the air without `force` | same |
 | discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused with the motors running) | same |
