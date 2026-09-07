@@ -296,6 +296,30 @@ def test_the_tick_keeps_streaming_through_the_mode_change(driver):
     assert driver.vehicle.calls.count(("velocity", (1.0, 0, 0, 0))) == 2
 
 
+def test_a_verb_during_prepare_waits_for_it(driver):
+    """Two threads changing modes at once fight over the aircraft."""
+    in_prepare, finish = threading.Event(), threading.Event()
+
+    def prepare():
+        in_prepare.set()
+        finish.wait(5.0)
+        driver.vehicle.calls.append(("prepare",))
+    driver.vehicle.prepare_sticks = prepare
+
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    asyncio.run(driver.on_tick())
+    assert in_prepare.wait(5.0)
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    time.sleep(0.2)
+    assert ("release",) not in driver.vehicle.calls    # land waits for prepare to end
+    finish.set()
+    t.join(5.0)
+    calls = driver.vehicle.calls
+    assert calls.index(("prepare",)) < calls.index(("release",)) < calls.index(("land",))
+
+
 def test_stick_expiry_releases_once(driver):
     driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
     asyncio.run(driver.on_tick())

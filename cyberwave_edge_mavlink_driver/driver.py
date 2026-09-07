@@ -55,8 +55,8 @@ class MavlinkDriver(BaseDriver):
         self.telemetry = Telemetry(self.link)
         # Only tele flies the aircraft. sim_tele is opt-in for SITL rigs.
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
-        self._lock = threading.Lock()   # discrete commands run one at a time
-        self._mode_lock = threading.Lock()   # one stick mode change at a time
+        # one thing at a time changes the aircraft's mode: a verb or the sticks
+        self._lock = threading.Lock()
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0
         self._sticks_live = False
@@ -207,7 +207,7 @@ class MavlinkDriver(BaseDriver):
         every publisher, so the twin's pose freezes mid-manoeuvre.
         """
         def run():
-            with self._mode_lock:
+            with self._lock:
                 try:
                     work()
                 except Exception:
