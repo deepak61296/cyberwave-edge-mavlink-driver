@@ -9,31 +9,33 @@ services:
     build: .
     env_file: .env
     # udpin:127.0.0.1:14553 is on the host, so the container shares the host's
-    # network. This also drops the port mapping question entirely: mavlink-router
+    # network. That also settles the port-mapping question: mavlink-router
     # pushes to the slot and the driver binds it.
     network_mode: host
+    restart: unless-stopped
     environment:
       MAVLINK_CONNECTION: udpin:127.0.0.1:14553
+      # Serial instead, with no router in front. Swap the line above for this
+      # one, drop network_mode, and uncomment the devices/group_add below.
+      # Only one process can hold the port, so this and mavlink-router are
+      # mutually exclusive.
+      # MAVLINK_CONNECTION: /dev/serial0
+      #
       # Bench and SITL only. Never on an aircraft.
       # CYBERWAVE_ACCEPT_SIM_TELE: "1"
-    restart: unless-stopped
+      #
+      # Under Edge Core the twin JSON arrives on disk. To imitate that, create
+      # the file first — bind-mounting a path that does not exist gets you a
+      # directory and a confusing error:
+      #   echo '{"metadata": {}}' > /tmp/cyberwave-twin.json
+      # CYBERWAVE_TWIN_JSON_FILE: /tmp/cyberwave-twin.json
 
-    # Serial instead: the driver owns the flight controller directly, with no
-    # router in front of it. Only one process can hold the port, so this and
-    # mavlink-router are mutually exclusive. Drop network_mode above, and swap
-    # dialout for the group that owns the device (`stat -c %G /dev/serial0`).
+    # The container is not root, so a serial link needs the owning group as
+    # well as the device. Check it with `stat -c %G /dev/serial0`.
     # devices:
     #   - /dev/serial0:/dev/serial0
     # group_add:
     #   - dialout
-    # environment:
-    #   MAVLINK_CONNECTION: /dev/serial0
 
-    # Under Edge Core the twin JSON arrives on disk. To imitate that locally,
-    # create the file first — bind-mounting a path that does not exist gets you
-    # a directory and a confusing error.
-    #   echo '{"metadata": {}}' > /tmp/cyberwave-twin.json
     # volumes:
     #   - /tmp/cyberwave-twin.json:/tmp/cyberwave-twin.json
-    # environment:
-    #   CYBERWAVE_TWIN_JSON_FILE: /tmp/cyberwave-twin.json
