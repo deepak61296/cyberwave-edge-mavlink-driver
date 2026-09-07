@@ -91,19 +91,32 @@ class Telemetry:
     def prop_joints(self):
         return self.props.payload(self.link.state["servo_pwm"])
 
+    def gimbal(self):
+        """Where the gimbal points, in degrees, or nothing without one."""
+        # a backend for an aircraft with no gimbal answers None here
+        read = getattr(self.vehicle, "gimbal_attitude", None)
+        angles = read() if read is not None else None
+        if angles is None:
+            return {}
+        return {"gimbal_pitch": round(angles[0], 1), "gimbal_yaw": round(angles[1], 1)}
+
     def vehicle_state(self):
         """Armed, mode and flight state: on change and at least once a second."""
         if self.vehicle is None:
             return None
         now = time.time()
-        snapshot = (self.vehicle.armed(), self.vehicle.mode_name(), self.flight_state())
+        gimbal = self.gimbal()
+        snapshot = (self.vehicle.armed(), self.vehicle.mode_name(),
+                    self.flight_state(), tuple(gimbal.values()))
         if snapshot == self._state_last and now - self._state_at < STATE_PERIOD_S:
             return None
         self._state_last, self._state_at = snapshot, now
         pwm = self.link.state["servo_pwm"]
-        return {"type": "vehicle_state", "armed": snapshot[0], "mode": snapshot[1],
-                "flight_state": snapshot[2], "motors_pwm": list(pwm) if pwm else None,
-                "source_type": "edge", "timestamp": now}
+        payload = {"type": "vehicle_state", "armed": snapshot[0], "mode": snapshot[1],
+                   "flight_state": snapshot[2], "motors_pwm": list(pwm) if pwm else None,
+                   "source_type": "edge", "timestamp": now}
+        payload.update(gimbal)
+        return payload
 
     def summary(self):
         """The fields merged into the driver's own telemetry snapshots."""
