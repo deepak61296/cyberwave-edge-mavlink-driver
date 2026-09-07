@@ -1,2 +1,2 @@
-cyberwave>=0.6.5
+cyberwave>=0.7.0
 pymavlink>=2.4.40
