@@ -751,3 +751,38 @@ def test_the_committed_catalog_is_the_generated_one():
     """cw-driver.yml is written by --write-cw-driver; it must not go stale."""
     on_disk = Path(__file__).resolve().parents[1] / "cw-driver.yml"
     assert yaml.safe_load(on_disk.read_text()) == MavlinkDriver.get_manifest(compiled=False)
+
+
+def test_stall_watchdog_leaves_when_ticks_stop():
+    from cyberwave_edge_mavlink_driver import main as entry
+
+    class Driver:
+        def __init__(self):
+            self.stopping = threading.Event()
+            self.ticked_at = 100.0   # last tick long ago on this clock
+
+    driver = Driver()
+    left = []
+
+    def leave(code):
+        left.append(code)
+        driver.stopping.set()   # the real os._exit never returns
+
+    entry.leave_when_stalled(driver, exit=leave, now=lambda: 100.0 + entry.TICK_STALL_S + 1,
+                             poll_s=0.01)
+    assert left == [3]
+
+
+def test_stall_watchdog_waits_for_the_first_tick():
+    from cyberwave_edge_mavlink_driver import main as entry
+
+    class Driver:
+        def __init__(self):
+            self.stopping = threading.Event()
+            self.ticked_at = None   # still connecting, no tick yet
+
+    driver = Driver()
+    left = []
+    threading.Timer(0.05, driver.stopping.set).start()
+    entry.leave_when_stalled(driver, exit=left.append, now=lambda: 1e9, poll_s=0.01)
+    assert left == []
