@@ -9,6 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
+from cyberwave.driver import DriverOperationMode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -282,6 +283,19 @@ def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     t.join(5.0)
     by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
     assert by_verb["takeoff"]["reason"] == "superseded"
+
+
+def test_stop_releases_the_sticks_and_replies_leaving_the_base_alone(driver):
+    """The base would drop to NO_OP and rewire every subscription per burst."""
+    driver._operation_mode = DriverOperationMode.TELEOP_REMOTE
+    driver._stick, driver._stick_at, driver._sticks_live = (1, 0, 0, 0), time.time(), True
+    asyncio.run(driver._on_stop_cmd({"source_type": "tele", "command": "stop", "data": {}}))
+    reply = driver.client.mqtt.replies[-1]
+    assert reply["command"] == "stop"
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("release",)]
+    assert driver._stick is None
+    assert driver._operation_mode is DriverOperationMode.TELEOP_REMOTE
 
 
 # --- sticks -------------------------------------------------------------

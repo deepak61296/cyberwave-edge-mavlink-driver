@@ -196,8 +196,11 @@ class MavlinkDriver(BaseDriver):
         self._stick_at = time.time()
 
     async def _on_stop_cmd(self, envelope):
+        # Not super(): the base answers stop by dropping to NO_OP, which
+        # unwires and rewires every subscription. The SDK ends each burst
+        # with a stop, and a burst chained straight after could lose
+        # envelopes in that gap. Here stop means release the sticks and reply.
         await self._on_command(envelope)
-        await super()._on_stop_cmd(envelope)
 
     def _off_tick(self, work):
         """Run a stick mode change away from the tick.
