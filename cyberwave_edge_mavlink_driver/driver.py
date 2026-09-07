@@ -30,6 +30,7 @@ from cyberwave.manifest.driver_config import (
 
 from . import contract
 from .link import MavlinkLink
+from .simulated import SIM_PREFIX, SimLink
 from .telemetry import Telemetry
 from .vehicle import pick_vehicle
 
@@ -51,7 +52,10 @@ class MavlinkDriver(BaseDriver):
     RECONNECT_MAX_ATTEMPTS = 1_000_000
 
     def __init__(self, params=None, *, twin=None, **kwargs):
-        self.link = MavlinkLink(os.environ.get("MAVLINK_CONNECTION", "tcp:127.0.0.1:5760"))
+        connection = os.environ.get("MAVLINK_CONNECTION", "tcp:127.0.0.1:5760")
+        # sim://quad and sim://dji fly a model in this process, with no MAVLink
+        link = SimLink if connection.startswith(SIM_PREFIX) else MavlinkLink
+        self.link = link(connection)
         self.vehicle = None
         self.telemetry = Telemetry(self.link)
         # Only tele flies the aircraft. sim_tele is opt-in for SITL rigs.

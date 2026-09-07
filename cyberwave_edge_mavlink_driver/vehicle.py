@@ -175,7 +175,10 @@ def pick_vehicle(link):
     """The backend for the autopilot that answered the heartbeat."""
     from .ardupilot import ArduPilot
     from .px4 import PX4
+    from .simulated import SimLink, SimVehicle
 
+    if isinstance(link, SimLink):
+        return SimVehicle(link)
     if link.autopilot == mavutil.mavlink.MAV_AUTOPILOT_PX4:
         return PX4(link)
     if link.autopilot != mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA:
