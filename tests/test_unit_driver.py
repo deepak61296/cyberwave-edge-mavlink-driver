@@ -166,6 +166,7 @@ def test_arm_command_parsed_and_answered(driver):
     ("cancel_landing", {}, ("hold",)),
     ("set_home_here", {}, ("set_home_here",)),
     ("reboot", {}, ("reboot",)),
+    ("reboot_aircraft", {}, ("reboot",)),
     ("set_home_location", {"latitude": 12.9716, "longitude": 77.5946},
      ("set_home", 12.9716, 77.5946, None)),
     ("set_home_location", {"latitude": 1.0, "longitude": 2.0, "altitude": 7.5},
@@ -465,10 +466,19 @@ def test_a_vehicle_that_refuses_answers_in_the_contracts_words(driver):
     assert reply["reason"] == "not supported on this vehicle"
 
 
+def test_reboot_aircraft_is_reboot(driver):
+    """Two names in the catalog, one thing that happens."""
+    for cmd in ("reboot", "reboot_aircraft"):
+        reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+        assert reply["status"] == "ok"
+        assert reply["command"] == cmd
+    assert driver.vehicle.calls == [("reboot",), ("reboot",)]
+
+
 @pytest.mark.parametrize("cmd", ("gimbal_rotate", "set_gimbal_pitch",
                                  "gimbal_rotate_speed", "set_home_location",
                                  "start_compass_calibration",
-                                 "stop_compass_calibration"))
+                                 "stop_compass_calibration", "reboot_aircraft"))
 def test_the_new_verbs_work_parked(driver, cmd):
     """None of them needs air, and the catalog would be a lie if they did."""
     assert cmd not in contract.NEEDS_AIR
@@ -892,7 +902,7 @@ def test_manifest_lists_every_verb_offline():
     supported = manifest["mqtt"]["commands"]["supported"]
     names = [c["name"] if isinstance(c, dict) else c for c in supported]
     for verb in ("arm", "disarm", "brake", "hover", "kill", "takeoff", "stop",
-                 "set_home_location", "gimbal_rotate",
+                 "reboot_aircraft", "set_home_location", "gimbal_rotate",
                  "set_gimbal_pitch", "gimbal_rotate_speed",
                  "start_compass_calibration", "stop_compass_calibration"):
         assert verb in names

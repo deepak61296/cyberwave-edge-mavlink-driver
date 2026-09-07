@@ -462,7 +462,7 @@ class MavlinkDriver(BaseDriver):
             return v.set_home_here()
         if cmd == "set_home_location":
             return self._set_home(data)
-        if cmd == "reboot":
+        if cmd in contract.REBOOT:
             return v.reboot()
         if cmd == "gimbal_rotate":
             return self._gimbal_rotate(data)

@@ -4,12 +4,16 @@
 DISCRETE = (
     "takeoff", "land", "return_to_home",
     "cancel_takeoff", "cancel_landing", "cancel_return_to_home",
-    "emergency_stop", "set_home_here", "set_home_location", "reboot",
+    "emergency_stop", "set_home_here", "set_home_location",
+    "reboot", "reboot_aircraft",
     "arm", "disarm", "brake", "kill",
     "hover",    # what the SDK's flight handle sends; another name for brake
     "gimbal_rotate", "set_gimbal_pitch", "gimbal_rotate_speed",
     "start_compass_calibration", "stop_compass_calibration",
 )
+
+# One verb, two names: the DJI catalog carries both and means the same thing.
+REBOOT = ("reboot", "reboot_aircraft")
 
 # Refusals whose words the contract fixes, so every driver says them the same.
 NOT_SUPPORTED = "not supported on this vehicle"
@@ -97,6 +101,8 @@ CATALOG = {
     "set_home_location": ("Make the given point home",
                           (("latitude", None, "deg"), ("longitude", None, "deg"),
                            ("altitude", None, "m"))),
+    "reboot_aircraft": ("Reboot the flight controller, the catalog's other "
+                        "name for reboot", ()),
     "gimbal_rotate": ("Point the camera, by mode absolute or relative to where "
                       "it is now",
                       (("pitch", None, "deg"), ("yaw", None, "deg"),

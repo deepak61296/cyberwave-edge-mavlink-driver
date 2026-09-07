@@ -75,6 +75,8 @@ mqtt:
       description: Make the given point home
     - name: reboot
       description: Reboot the flight controller, refused with the motors running
+    - name: reboot_aircraft
+      description: Reboot the flight controller, the catalog's other name for reboot
     - name: arm
       args:
       - name: force
