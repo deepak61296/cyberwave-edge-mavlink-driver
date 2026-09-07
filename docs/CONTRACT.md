@@ -61,6 +61,11 @@ observable state has changed or a driver timeout has expired, which replies `sta
 phrases, for when the vehicle gives no words of its own: `not supported on this vehicle`, `not connected`,
 `not in air`, `already in air`, `not armed`, `motors running`, `no position fix`, `no home set`, `nothing to cancel`, `in air, send force to override`.
 
+On the ground with the motors off there is nothing to land, cancel or hold, so `land`, `return_to_home`,
+`brake`, `hover`, `emergency_stop` and the three `cancel_*` verbs all refuse `not in air` there. With the
+motors running a hold is still a real mode change, so armed on the ground is accepted. A verb the driver has
+no handler for refuses `not supported on this vehicle`.
+
 ### 3.1 Discrete verbs
 
 | Verb | Data (units) | Must do | Must refuse when | Reply |
