@@ -342,6 +342,31 @@ def test_the_tick_keeps_streaming_through_the_mode_change(driver):
     assert driver.vehicle.calls.count(("velocity", (1.0, 0, 0, 0))) == 2
 
 
+def test_sticks_are_dropped_while_a_verb_runs(driver):
+    """A burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it."""
+    v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
+
+    def land():
+        in_land.set()
+        finish.wait(5.0)
+        return True, ""
+    v.land = land
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "land", "data": {}}))
+    t.start()
+    assert in_land.wait(5.0)
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    assert driver._stick is None
+    driver._stick, driver._stick_at = (1.0, 0, 0, 0), time.time()   # slipped in before
+    asyncio.run(driver.on_tick())
+    assert ("velocity", (1.0, 0, 0, 0)) not in v.calls
+    finish.set()
+    t.join(5.0)
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    assert driver._stick == (1.0, 0, 0, 0)      # taken again once the verb is done
+
+
 def test_a_verb_during_prepare_waits_for_it(driver):
     """Two threads changing modes at once fight over the aircraft."""
     in_prepare, finish = threading.Event(), threading.Event()
