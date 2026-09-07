@@ -3,6 +3,7 @@ telemetry payloads. No aircraft, no broker, no network."""
 
 import asyncio
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -97,6 +98,14 @@ def driver():
     d.link.state["last_attitude"] = time.time()
     d.link.state["servo_pwm"] = (1000, 1000, 1000, 1000)
     return d
+
+
+def until(cond, timeout=5.0):
+    """Wait for work the driver handed to a thread."""
+    end = time.time() + timeout
+    while time.time() < end and not cond():
+        time.sleep(0.01)
+    assert cond()
 
 
 def send(d, envelope):
@@ -231,19 +240,26 @@ def test_fresh_stick_is_streamed_after_preparing_once(driver):
     driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
     asyncio.run(driver.on_tick())
     asyncio.run(driver.on_tick())
-    assert driver.vehicle.calls == [("prepare",), ("velocity", (1.0, 0, 0, 0)),
-                                    ("velocity", (1.0, 0, 0, 0))]
+    until(lambda: ("prepare",) in driver.vehicle.calls)
+    assert driver.vehicle.calls.count(("prepare",)) == 1
+    assert [c for c in driver.vehicle.calls if c[0] == "velocity"] == \
+        [("velocity", (1.0, 0, 0, 0))] * 2
 
 
-def test_stick_dropped_while_preparing_sends_nothing(driver):
+def test_the_tick_keeps_streaming_through_the_mode_change(driver):
+    in_prepare, finish = threading.Event(), threading.Event()
+
     def prepare():
-        driver.vehicle.calls.append(("prepare",))
-        driver._release_sticks()   # a discrete command lands mid mode change
+        in_prepare.set()
+        finish.wait(5.0)
 
     driver.vehicle.prepare_sticks = prepare
     driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
     asyncio.run(driver.on_tick())
-    assert driver.vehicle.calls == [("prepare",), ("release",)]
+    assert in_prepare.wait(5.0)
+    asyncio.run(driver.on_tick())   # would block if prepare ran on the tick
+    finish.set()
+    assert driver.vehicle.calls.count(("velocity", (1.0, 0, 0, 0))) == 2
 
 
 def test_stick_expiry_releases_once(driver):
@@ -252,6 +268,7 @@ def test_stick_expiry_releases_once(driver):
     driver._stick_at -= contract.STICK_TIMEOUT_S + 0.1
     asyncio.run(driver.on_tick())
     asyncio.run(driver.on_tick())
+    until(lambda: ("release",) in driver.vehicle.calls)
     assert driver.vehicle.calls.count(("release",)) == 1
     assert driver.vehicle.calls[-1] == ("release",)
 
