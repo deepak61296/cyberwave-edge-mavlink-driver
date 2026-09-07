@@ -1,11 +1,39 @@
+# Companion-computer shape: mavlink-router owns the flight controller's serial
+# port and fans it out over UDP, and the driver takes one of those slots. Port
+# 14553 is what provision/ configures on the Pi.
+#
+#   cp .env.example .env    # CYBERWAVE_API_KEY, CYBERWAVE_TWIN_UUID
+#   docker compose up --build
 services:
   driver:
     build: .
     env_file: .env
-    # Pass through a USB/serial device if needed:
-    # devices:
-    #   - /dev/ttyUSB0:/dev/ttyUSB0
-    volumes:
-      - /tmp/cyberwave-twin.json:/tmp/cyberwave-twin.json
+    # udpin:127.0.0.1:14553 is on the host, so the container shares the host's
+    # network. This also drops the port mapping question entirely: mavlink-router
+    # pushes to the slot and the driver binds it.
+    network_mode: host
     environment:
-      CYBERWAVE_TWIN_JSON_FILE: /tmp/cyberwave-twin.json
+      MAVLINK_CONNECTION: udpin:127.0.0.1:14553
+      # Bench and SITL only. Never on an aircraft.
+      # CYBERWAVE_ACCEPT_SIM_TELE: "1"
+    restart: unless-stopped
+
+    # Serial instead: the driver owns the flight controller directly, with no
+    # router in front of it. Only one process can hold the port, so this and
+    # mavlink-router are mutually exclusive. Drop network_mode above, and swap
+    # dialout for the group that owns the device (`stat -c %G /dev/serial0`).
+    # devices:
+    #   - /dev/serial0:/dev/serial0
+    # group_add:
+    #   - dialout
+    # environment:
+    #   MAVLINK_CONNECTION: /dev/serial0
+
+    # Under Edge Core the twin JSON arrives on disk. To imitate that locally,
+    # create the file first — bind-mounting a path that does not exist gets you
+    # a directory and a confusing error.
+    #   echo '{"metadata": {}}' > /tmp/cyberwave-twin.json
+    # volumes:
+    #   - /tmp/cyberwave-twin.json:/tmp/cyberwave-twin.json
+    # environment:
+    #   CYBERWAVE_TWIN_JSON_FILE: /tmp/cyberwave-twin.json
