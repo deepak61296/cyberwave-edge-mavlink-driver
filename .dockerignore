@@ -1,3 +1,5 @@
+# The first block is the driver skill's template. The rest keeps the image to
+# what actually flies.
 .env
 .git
 .venv
@@ -6,3 +8,11 @@ __pycache__
 *.egg-info
 dist
 .pytest_cache
+
+.github
+docs
+deploy
+examples
+# tests/ holds live flight scripts that move a real aircraft at import time.
+# They have no business in a runtime image.
+tests
