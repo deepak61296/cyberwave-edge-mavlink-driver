@@ -90,6 +90,13 @@ direction "both"). `status` is unchanged; the rest is additive:
   autopilot stops sending heartbeats, one at `info` when it is back. Only
   the two transitions, and the REST call runs off the tick loop
 
+The SDK's own `driver_info` snapshot goes out once a second beside these,
+and `driver_info_extra()` puts armed, mode and flight_state into it too. That
+repeats what `vehicle_state` already carries, deliberately: a consumer
+watching the lifecycle snapshot alone still sees the aircraft, while one
+watching telemetry gets each change when it happens instead of at the next
+second.
+
 Contract behaviors honored:
 
 - **Dead-man**: continuous commands must refresh within **500 ms** or the
@@ -137,6 +144,20 @@ cyberwave_edge_mavlink_driver/
 - **publishers** are registry publishers on the tick loop, `source_type`
   `edge`, and run whether or not a controller is attached.
 - The backend is picked from `HEARTBEAT.autopilot` (3 ArduPilot, 12 PX4).
+
+`cw-driver.yml` at the repo root is generated, never edited by hand. It comes
+from `contract.py` and `define_interface`, so change those and then run
+`python -m cyberwave_edge_mavlink_driver.main --write-cw-driver`, committing
+the new file with the change that caused it. A unit test compares the
+committed catalog against the one the code produces, so a stale file fails
+the suite rather than reaching a twin.
+
+`on_reconnect` is the SDK's hook for reopening the device transport, and here
+it reopens the broker instead. MAVLink needs no help: the pump thread sees a
+socket that has gone silent and rebuilds the link itself. The broker does,
+because nothing else notices it, so `on_tick` sets the base's
+`_connection_lost` flag as soon as `mqtt.connected` reads false and the base
+then calls `on_reconnect` until the client is back.
 
 ## Run it (SITL quickstart)
 
