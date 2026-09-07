@@ -57,6 +57,8 @@ class PX4(Vehicle):
         # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
         # the last 2.5 s, so without this we never learn why anything failed.
         # ArduPilot must not get it: there a GCS heartbeat arms its GCS failsafe.
+        if not self.link.ready():
+            return          # the link is being rebuilt; nothing goes into the gap
         now = time.time()
         if now - self._heartbeat_at >= GCS_HEARTBEAT_S:
             self._heartbeat_at = now
@@ -97,6 +99,8 @@ class PX4(Vehicle):
 
     def takeoff(self, altitude):
         # the takeoff altitude is a parameter, not a command argument
+        if not self.link.ready():
+            return False, "not connected"
         self.link.m.mav.param_set_send(
             self.link.m.target_system, self.link.m.target_component,
             b"MIS_TAKEOFF_ALT", float(altitude), mavutil.mavlink.MAV_PARAM_TYPE_REAL32)

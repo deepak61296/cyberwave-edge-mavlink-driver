@@ -17,7 +17,7 @@ class ArduPilot(Vehicle):
     name = "ardupilot"
 
     def mode_name(self):
-        by_number = {v: k for k, v in (self.link.m.mode_mapping() or {}).items()}
+        by_number = {v: k for k, v in self.link.mode_names().items()}
         mode = self.link.state["mode"]
         return by_number.get(mode, f"MODE({mode})")
 
@@ -26,7 +26,7 @@ class ArduPilot(Vehicle):
 
     def set_mode(self, name, timeout=30.0):
         """Ask for a mode once a second until the heartbeat shows it."""
-        want = (self.link.m.mode_mapping() or {}).get(name)
+        want = self.link.mode_names().get(name)
         if want is None:
             return False, f"unknown mode {name}"
         t0 = time.time()

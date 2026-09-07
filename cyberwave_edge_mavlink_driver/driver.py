@@ -63,6 +63,7 @@ class MavlinkDriver(BaseDriver):
         self._streams_at = 0.0
         self._pump = None
         self._pump_stop = threading.Event()
+        self.stopping = threading.Event()   # the shutdown has begun
         super().__init__(params, twin=twin, **kwargs)
 
     @classmethod
@@ -120,6 +121,7 @@ class MavlinkDriver(BaseDriver):
                     self.link.connection_string, self.accept_sim_tele)
 
     async def on_shutdown(self):
+        self.stopping.set()
         self._pump_stop.set()
         if self._pump is not None:
             self._pump.join(timeout=2.0)
@@ -238,6 +240,9 @@ class MavlinkDriver(BaseDriver):
             self._reply(cmd, ok, reason)
 
     def _execute(self, cmd, data):
+        # while the link is being rebuilt a verb would only wait out its ack
+        if not self.link.ready():
+            return False, "not connected"
         v = self.vehicle
         if cmd == "takeoff":
             return v.takeoff(float(data.get("altitude", contract.DEFAULT_TAKEOFF_ALT)))

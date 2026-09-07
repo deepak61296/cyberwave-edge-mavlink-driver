@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 VEL_MASK = 0b0000011111000111  # velocity + yaw rate, everything else ignored
 HEARTBEAT_TIMEOUT_S = 3.0
+REOPEN_BACKOFF_S = 1.0      # let a rebooting autopilot get its port back
 STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 
 # setpoint frames: ArduPilot takes body-offset, PX4 only takes these two
@@ -45,6 +46,11 @@ LANDED_STATES = {
     mavutil.mavlink.MAV_LANDED_STATE_TAKEOFF: "in_air",
     mavutil.mavlink.MAV_LANDED_STATE_LANDING: "in_air",
 }
+
+
+def _ignore_eof():
+    """pymavlink's hook for a far end that went away. We watch the heartbeat
+    instead, and its print fires on every read of the dead socket."""
 
 
 def is_vehicle_heartbeat(msg):
@@ -97,30 +103,64 @@ class MavlinkLink:
         self._texts_lock = threading.Lock()
         self._foreign_heartbeats = set()   # logged once each
         self._partial = None               # STATUSTEXT chunks still arriving
+        self.up_at = 0.0                   # when we last opened the link
+        self.reopens = 0
 
     # -- connection ----------------------------------------------------
 
     def connect(self, timeout=60.0):
         logger.info("connecting to %s", self.connection_string)
-        self.m = mavutil.mavlink_connection(self.connection_string)
+        self._open(timeout)
+        self.request_streams()
+
+    def _open(self, timeout):
+        """Open the socket and take the first heartbeat that is the aircraft.
+
+        The new handle only becomes ours once that heartbeat names a system:
+        anything sent before it would go out addressed to 0, which is every
+        aircraft on the link.
+        """
+        m = mavutil.mavlink_connection(self.connection_string)
+        # pymavlink answers a socket at EOF with a print and reads it again,
+        # which buried the log at a hundred thousand lines a second
+        m.handle_eof = m.handle_disconnect = _ignore_eof
+        self.autopilot = None
         # Behind mavlink-router the first heartbeat can carry sysid 0;
         # accepting it would turn every command into a broadcast.
         deadline = time.time() + timeout
         while time.time() < deadline:
-            hb = self.m.wait_heartbeat(timeout=5)
+            hb = m.wait_heartbeat(timeout=5)
             if hb is not None and is_vehicle_heartbeat(hb) and hb.get_srcSystem() != 0:
-                self.m.target_system = hb.get_srcSystem()
-                self.m.target_component = hb.get_srcComponent()
+                m.target_system = hb.get_srcSystem()
+                m.target_component = hb.get_srcComponent()
                 self.autopilot = hb.autopilot
+                self.state["last_heartbeat"] = self.up_at = time.time()
+                self.m = m
                 break
         if self.autopilot is None:
+            m.close()
             raise ConnectionError(f"no usable heartbeat on {self.connection_string}")
         logger.info("heartbeat: sys=%s comp=%s autopilot=%s",
                     self.m.target_system, self.m.target_component, self.autopilot)
+
+    def _reopen(self):
+        """Build the link again after the autopilot dropped it, e.g. a reboot."""
+        self.reopens += 1
+        logger.warning("link quiet, reopening %s (attempt %d)",
+                       self.connection_string, self.reopens)
+        try:
+            self.close()
+        except Exception:
+            pass
+        time.sleep(REOPEN_BACKOFF_S)
+        self._open(timeout=30.0)
         self.request_streams()
+        logger.info("link back up, streams requested again")
 
     def request_streams(self):
         """Ask for what we read at 10 Hz, and the landed state at 2 Hz."""
+        if not self.ready():
+            return
         self.m.mav.request_data_stream_send(
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1)
@@ -134,9 +174,19 @@ class MavlinkLink:
         """A vehicle heartbeat within the last few seconds."""
         return time.time() - self.state["last_heartbeat"] < HEARTBEAT_TIMEOUT_S
 
+    def ready(self):
+        """True when there is a handle we are allowed to send on."""
+        return self.m is not None
+
+    def mode_names(self):
+        """The autopilot's mode table, empty while the link is being rebuilt."""
+        return (self.m.mode_mapping() or {}) if self.ready() else {}
+
     def close(self):
-        if self.m is not None:
-            self.m.close()
+        # unusable first: a send into the gap would be addressed to everyone
+        m, self.m = self.m, None
+        if m is not None:
+            m.close()
 
     # -- pump (call from ONE thread only) ------------------------------
 
@@ -154,7 +204,15 @@ class MavlinkLink:
         return False
 
     def pump_once(self, timeout=1.0):
-        """Receive one message, fold it into state, return its type."""
+        """Receive one message, fold it into state, return its type.
+
+        The pump is the only reader, so the reopen of a dead link lives here.
+        A silent socket is the signal: pymavlink hides the EOF behind a
+        print and hands back an empty read for ever.
+        """
+        if not self.ready() or (self.up_at and not self.connected()):
+            self._reopen()
+            return None
         msg = self.m.recv_match(blocking=True, timeout=timeout)
         if msg is None:
             return None
@@ -238,6 +296,8 @@ class MavlinkLink:
 
     def send_command(self, cmd, *params, fill=0.0):
         """COMMAND_LONG with seven params, the unused ones set to fill."""
+        if not self.ready():
+            return
         params = list(params) + [fill] * (7 - len(params))
         # only an ack that arrives after this send may explain the result
         self.state["acks"].pop(cmd, None)
@@ -255,6 +315,8 @@ class MavlinkLink:
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate, frame=BODY_OFFSET_NED):
         """One body-frame velocity setpoint. Callers stream this at 10 Hz."""
+        if not self.ready():
+            return
         self.m.mav.set_position_target_local_ned_send(
             0, self.m.target_system, self.m.target_component, frame,
             VEL_MASK, 0, 0, 0, vx, vy, vz, 0, 0, 0, 0, yaw_rate)

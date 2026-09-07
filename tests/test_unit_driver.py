@@ -188,6 +188,14 @@ def test_refused_arm_reply_carries_the_reason(driver):
     assert reply["reason"] == "Arm: RC not found"
 
 
+def test_commands_are_refused_while_the_link_is_rebuilt(driver):
+    driver.link.m = None
+    reply = send(driver, {"source_type": "tele", "command": "arm", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "not connected"
+    assert driver.vehicle.calls == []
+
+
 def test_unknown_command_is_answered_not_dropped(driver):
     reply = send(driver, {"source_type": "tele", "command": "calibrate_compass", "data": {}})
     assert reply["status"] == "error"
@@ -315,6 +323,16 @@ def test_position_and_rotation_payloads(driver):
     assert driver.telemetry.rotation() is None
     driver.link.state["attitude"] = (0.0, 0.0, 0.0)
     assert set(driver.telemetry.rotation()["rotation"]) == {"w", "x", "y", "z"}
+
+
+def test_a_disconnected_link_publishes_no_pose_at_all(driver):
+    """The last fix stays in the cache, and it must not go out as live."""
+    driver.link.state["ned"] = (1.0, 2.0, -3.0)
+    driver.link.state["attitude"] = (0.0, 0.0, 0.0)
+    assert driver.telemetry.position() is not None
+    driver.link.state["last_heartbeat"] = time.time() - 10
+    assert driver.telemetry.position() is None
+    assert driver.telemetry.rotation() is None
 
 
 def test_props_spin_from_pwm(driver):
