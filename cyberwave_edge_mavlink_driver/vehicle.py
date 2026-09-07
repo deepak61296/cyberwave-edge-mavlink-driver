@@ -6,6 +6,7 @@ import time
 
 from pymavlink import mavutil
 
+from .contract import MOTORS_RUNNING, NOT_SUPPORTED
 from .link import BODY_OFFSET_NED
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,19 @@ logger = logging.getLogger(__name__)
 # MAV_CMD_COMPONENT_ARM_DISARM param2: arm or disarm anyway, skip the checks
 FORCE_ARM = 2989
 FORCE_DISARM = 21196
+
+# An angle or a rate given as NaN is an axis the caller did not command, which
+# is MAVLink's own convention and the contract's "an axis left out".
+NAN = float("nan")
+
+
+class Refused(Exception):
+    """A verb the vehicle will not do, in the contract's own words.
+
+    The verbs that answer with (ok, reason) keep doing that. The ones that
+    return nothing say no by raising this, and the driver puts the message
+    straight into the reply's reason.
+    """
 
 
 def result_name(result):
@@ -88,7 +102,7 @@ class Vehicle:
 
     def reboot(self):
         if self.armed():
-            return False, "motors running"
+            return False, MOTORS_RUNNING
         return self._acked(mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 1)
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
@@ -141,6 +155,40 @@ class Vehicle:
                                    *params, fill=fill)
             self._wait(in_mode, min(1.0, t0 + timeout - time.time()), meanwhile)
         return True, ""
+
+    # -- camera, home and compass ----------------------------------------
+    #
+    # Everything a vehicle without a gimbal, or without these commands, can
+    # leave exactly as it is: the refusal is already the contract's phrase.
+
+    def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
+        """Point the camera at pitch and yaw, in degrees.
+
+        absolute False makes both a delta from where the gimbal is now. An
+        axis given as NAN is one the caller did not command. duration_s, when
+        given, is how long the move should take.
+        """
+        raise Refused(NOT_SUPPORTED)
+
+    def gimbal_rate(self, pitch_dps, yaw_dps):
+        """Turn the camera at these rates, in degrees per second.
+
+        Called from the tick on every pass while a gimbal stick is live, and
+        once with zeros when it is released, so it must not wait on anything.
+        """
+        raise Refused(NOT_SUPPORTED)
+
+    def gimbal_attitude(self):
+        """(pitch, yaw) in degrees, or None when there is no gimbal to read."""
+        return None
+
+    def set_home(self, lat, lon, alt_m):
+        """Record this point as home. alt_m None keeps the height home has."""
+        raise Refused(NOT_SUPPORTED)
+
+    def compass_calibration(self, start):
+        """Begin the compass calibration, or abort the one running."""
+        raise Refused(NOT_SUPPORTED)
 
     # -- per autopilot ---------------------------------------------------
 

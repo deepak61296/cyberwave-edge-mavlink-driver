@@ -61,6 +61,18 @@ mqtt:
       description: Drop the automation and hold position, motors running
     - name: set_home_here
       description: Make the current position home
+    - name: set_home_location
+      args:
+      - name: latitude
+        default: null
+        unit: deg
+      - name: longitude
+        default: null
+        unit: deg
+      - name: altitude
+        default: null
+        unit: m
+      description: Make the given point home
     - name: reboot
       description: Reboot the flight controller, refused with the motors running
     - name: arm
@@ -85,6 +97,46 @@ mqtt:
       description: Cut the motors now; in the air it takes force
     - name: hover
       description: Hold position, the flight handle's word for brake
+    - name: gimbal_rotate
+      args:
+      - name: pitch
+        default: null
+        unit: deg
+      - name: yaw
+        default: null
+        unit: deg
+      - name: roll
+        default: null
+        unit: deg
+      - name: mode
+        default: absolute
+        unit: null
+      - name: duration
+        default: null
+        unit: s
+      description: Point the camera, by mode absolute or relative to where it is now
+    - name: set_gimbal_pitch
+      args:
+      - name: pitch
+        default: 0.0
+        unit: deg
+      description: Point the camera at an absolute pitch
+    - name: gimbal_rotate_speed
+      args:
+      - name: pitch
+        default: null
+        unit: 0.1 deg/s
+      - name: yaw
+        default: null
+        unit: 0.1 deg/s
+      - name: roll
+        default: null
+        unit: 0.1 deg/s
+      description: Turn the camera at a rate until it is stopped
+    - name: start_compass_calibration
+      description: Begin compass calibration, refused with the motors running
+    - name: stop_compass_calibration
+      description: Abort a compass calibration
     - name: move_forward
       continuous: true
       rate_hz: 10
@@ -173,3 +225,27 @@ mqtt:
         default: null
         unit: rad
       description: Yaw left while the bursts keep coming, or by the distance given
+    - name: gimbal_pitch_up
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: rate
+        default: 30.0
+        unit: deg/s
+      - name: distance
+        default: null
+        unit: deg
+      description: Tilt the camera up while the bursts keep coming, or by the angle
+        given
+    - name: gimbal_pitch_down
+      continuous: true
+      rate_hz: 10
+      args:
+      - name: rate
+        default: 30.0
+        unit: deg/s
+      - name: distance
+        default: null
+        unit: deg
+      description: Tilt the camera down while the bursts keep coming, or by the angle
+        given

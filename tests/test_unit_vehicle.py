@@ -18,7 +18,11 @@ from cyberwave_edge_mavlink_driver import ardupilot, px4  # noqa: E402
 from cyberwave_edge_mavlink_driver.ardupilot import ArduPilot  # noqa: E402
 from cyberwave_edge_mavlink_driver.link import MavlinkLink  # noqa: E402
 from cyberwave_edge_mavlink_driver.px4 import PX4  # noqa: E402
-from cyberwave_edge_mavlink_driver.vehicle import Vehicle, pick_vehicle  # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import (  # noqa: E402
+    Refused,
+    Vehicle,
+    pick_vehicle,
+)
 
 ARM = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
 SET_MODE = mavutil.mavlink.MAV_CMD_DO_SET_MODE
@@ -294,6 +298,23 @@ def test_ardupilot_release_is_one_zero_setpoint():
     ArduPilot(link).release_sticks()
     assert link.m.sent == [("vel", 0, 1, 1, mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
                             0b0000011111000111, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
+
+
+# --- camera, home and compass -----------------------------------------
+
+@pytest.mark.parametrize("call", [
+    lambda v: v.gimbal_point(0.0, 0.0, True),
+    lambda v: v.gimbal_rate(0.0, 0.0),
+    lambda v: v.set_home(1.0, 2.0, None),
+    lambda v: v.compass_calibration(True),
+])
+def test_a_vehicle_with_none_of_this_says_so(call):
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        call(Vehicle(link_with()))
+
+
+def test_a_vehicle_with_no_gimbal_has_no_angle_to_report():
+    assert Vehicle(link_with()).gimbal_attitude() is None
 
 
 # --- PX4 --------------------------------------------------------------
