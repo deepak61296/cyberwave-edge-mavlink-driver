@@ -115,6 +115,25 @@ class Vehicle:
             return True, ""
         return False, result_name(result)
 
+    def _set_mode(self, name, want, params, timeout, fill=0.0, meanwhile=None):
+        """DO_SET_MODE(*params) once a second until the heartbeat reads want."""
+        t0 = time.time()
+
+        def in_mode():
+            return self.link.state["mode"] == want
+
+        while not in_mode():
+            if self.abort.is_set() or time.time() > t0 + timeout:
+                # the autopilot usually says why on the text channel; prefer its words
+                why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
+                logger.error("could not enter %s: %s", name, why)
+                return False, why or f"could not enter {name} within {timeout:.0f}s"
+            self.link.send_command(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                                   mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                                   *params, fill=fill)
+            self._wait(in_mode, min(1.0, t0 + timeout - time.time()), meanwhile)
+        return True, ""
+
     # -- per autopilot ---------------------------------------------------
 
     def mode_name(self):

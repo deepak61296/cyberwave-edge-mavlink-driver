@@ -16,33 +16,27 @@ class ArduPilot(Vehicle):
 
     name = "ardupilot"
 
+    def __init__(self, link):
+        super().__init__(link)
+        # the table for the system we accepted; pymavlink's own mode_mapping()
+        # follows whichever heartbeat it saw first, which differs on a shared link
+        kind = link.m.sysid_state[link.m.target_system].mav_type
+        self.modes = mavutil.mode_mapping_byname(kind) or {}
+        self._names = {v: k for k, v in self.modes.items()}
+
     def mode_name(self):
-        by_number = {v: k for k, v in (self.link.m.mode_mapping() or {}).items()}
         mode = self.link.state["mode"]
-        return by_number.get(mode, f"MODE({mode})")
+        return self._names.get(mode, f"MODE({mode})")
 
     def returning(self):
         return self.mode_name() in ("RTL", "SMART_RTL")
 
     def set_mode(self, name, timeout=30.0):
-        """Ask for a mode once a second until the heartbeat shows it."""
-        want = (self.link.m.mode_mapping() or {}).get(name)
+        """Ask for a mode by name until the heartbeat shows it."""
+        want = self.modes.get(name)
         if want is None:
             return False, f"unknown mode {name}"
-        t0 = time.time()
-
-        def in_mode():
-            return self.link.state["mode"] == want
-
-        while not in_mode():
-            if self.abort.is_set() or time.time() > t0 + timeout:
-                # the autopilot usually says why on the text channel; prefer its words
-                why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
-                logger.error("could not enter mode %s: %s", name, why)
-                return False, why or f"could not enter {name} within {timeout:.0f}s"
-            self.link.m.set_mode(name)
-            self._wait(in_mode, min(1.0, t0 + timeout - time.time()))
-        return True, ""
+        return self._set_mode(name, want, (want,), timeout)
 
     def set_armed(self, arm, force=False, timeout=5.0):
         # LAND is not armable, the bench found out

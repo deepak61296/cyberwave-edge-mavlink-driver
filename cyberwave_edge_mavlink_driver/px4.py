@@ -72,22 +72,10 @@ class PX4(Vehicle):
         return self.link.state["mode"] == custom_mode(AUTO, AUTO_SUB["RTL"])
 
     def set_mode(self, main, sub=0, timeout=10.0, meanwhile=None):
-        """DO_SET_MODE once a second until the heartbeat shows it."""
+        """DO_SET_MODE(main, sub), confirmed on the heartbeat."""
         want = custom_mode(main, sub)
-        t0 = time.time()
-
-        def in_mode():
-            return self.link.state["mode"] == want
-
-        while not in_mode():
-            if self.abort.is_set() or time.time() > t0 + timeout:
-                why = "; ".join(dict.fromkeys(self.link.texts_since(t0)))
-                logger.error("could not enter %s: %s", mode_name(want), why)
-                return False, why or f"could not enter {mode_name(want)} within {timeout:.0f}s"
-            self.link.send_command(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
-                                   1, main, sub, fill=NAN)
-            self._wait(in_mode, min(1.0, t0 + timeout - time.time()), meanwhile)
-        return True, ""
+        return self._set_mode(mode_name(want), want, (main, sub), timeout,
+                              fill=NAN, meanwhile=meanwhile)
 
     def set_armed(self, arm, force=False, timeout=5.0):
         if arm and force:

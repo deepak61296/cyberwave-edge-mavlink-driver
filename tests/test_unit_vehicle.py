@@ -30,8 +30,9 @@ class FakeMav:
 
     def __init__(self, on_send=None):
         self.target_system, self.target_component = 1, 1
+        # what pymavlink noted from the heartbeat of the system we accepted
+        self.sysid_state = {1: types.SimpleNamespace(mav_type=mavutil.mavlink.MAV_TYPE_QUADROTOR)}
         self.sent = []
-        self.modes_asked = []
         self.params = {}
         self._on_send = on_send
         self.mav = types.SimpleNamespace(
@@ -45,12 +46,6 @@ class FakeMav:
         self.sent.append(args)
         if self._on_send is not None:
             self._on_send(*args)
-
-    def mode_mapping(self):
-        return COPTER_MODES
-
-    def set_mode(self, name):
-        self.modes_asked.append(name)
 
     def commands(self):
         return [s[2] for s in self.sent if s[0] not in ("vel", "hb")]
@@ -171,30 +166,44 @@ def test_ardupilot_mode_name_comes_from_the_heartbeat():
     assert ArduPilot(link).mode_name() == "GUIDED"
 
 
+def test_ardupilot_mode_change_is_a_do_set_mode_to_the_accepted_system():
+    link = link_with(lambda *a: link.state.__setitem__("mode", int(a[5])))
+    assert ArduPilot(link).set_mode("GUIDED", timeout=0.5) == (True, "")
+    assert link.m.sent == [(1, 1, SET_MODE, 0, mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                            COPTER_MODES["GUIDED"], 0.0, 0.0, 0.0, 0.0, 0.0)]
+
+
+def test_ardupilot_mode_table_follows_the_accepted_system():
+    """pymavlink's own table follows whichever heartbeat it saw first."""
+    link = link_with()
+    link.m.sysid_state[1].mav_type = mavutil.mavlink.MAV_TYPE_GROUND_ROVER
+    v = ArduPilot(link)
+    assert "BRAKE" not in v.modes
+    link.state["mode"] = mavutil.mode_mapping_byname(mavutil.mavlink.MAV_TYPE_GROUND_ROVER)["GUIDED"]
+    assert v.mode_name() == "GUIDED"
+
+
 def test_ardupilot_arms_out_of_land_via_guided():
     """LAND is not armable, so an arm request switches to GUIDED first."""
     link = link_with()
     link.state["mode"] = COPTER_MODES["LAND"]
-    v = ArduPilot(link)
 
-    def become(name):
-        link.m.modes_asked.append(name)
-        link.state["mode"] = COPTER_MODES[name]
-    link.m.set_mode = become
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = True
+    link.m._on_send = autopilot
 
-    def arm(*a):
-        link.state["armed"] = True
-    link.m._on_send = arm
-
-    assert v.set_armed(True, timeout=0.5) == (True, "")
-    assert link.m.modes_asked == ["GUIDED"]
+    assert ArduPilot(link).set_armed(True, timeout=0.5) == (True, "")
+    assert link.m.commands() == [SET_MODE, ARM]
+    assert link.m.sent[0][5] == COPTER_MODES["GUIDED"]
 
 
 def test_ardupilot_mode_refusal_returns_the_fc_words():
     """A mode the vehicle will not take is refused on the text channel."""
-    link = link_with()
-    link.m.set_mode = lambda name: link._texts.append(
-        (time.time(), "Flight mode change failed"))
+    link = link_with(lambda *a: link._texts.append(
+        (time.time(), "Flight mode change failed")))
     ok, reason = ArduPilot(link).set_mode("BRAKE", timeout=0.3)
     assert ok is False
     assert reason == "Flight mode change failed"
@@ -210,7 +219,7 @@ def test_ardupilot_mode_refusal_without_words_says_what_it_waited_for():
 def test_ardupilot_hold_on_the_ground_does_nothing():
     link = link_with()
     assert ArduPilot(link).hold() == (True, "")
-    assert link.m.modes_asked == []
+    assert link.m.sent == []
 
 
 def test_ardupilot_release_is_one_zero_setpoint():
