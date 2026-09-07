@@ -56,6 +56,7 @@ class MavlinkDriver(BaseDriver):
         # Only tele flies the aircraft. sim_tele is opt-in for SITL rigs.
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
         self._lock = threading.Lock()   # discrete commands run one at a time
+        self._mode_lock = threading.Lock()   # one stick mode change at a time
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0
         self._sticks_live = False
@@ -153,16 +154,15 @@ class MavlinkDriver(BaseDriver):
         self.vehicle.tick()
         stick = self._stick
         if stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
+            self.vehicle.send_velocity_body(*stick)
             if not self._sticks_live:
                 self._sticks_live = True
-                await asyncio.to_thread(self.vehicle.prepare_sticks)
-                # switching to OFFBOARD takes a moment, and a discrete command
-                # arriving in it drops the sticks under us
-                stick = self._stick
-            if stick is not None:
-                self.vehicle.send_velocity_body(*stick)
+                self._off_tick(self.vehicle.prepare_sticks)
         elif self._sticks_live:
-            await asyncio.to_thread(self._release_sticks)
+            self._sticks_live = False
+            self._stick = None
+            self._off_tick(self.vehicle.release_sticks)
+            logger.info("sticks released")
         # a cold-booted autopilot can miss the first stream request
         if now - self.link.state["last_attitude"] > STREAM_RETRY_S \
                 and now - self._streams_at > STREAM_RETRY_S:
@@ -200,6 +200,22 @@ class MavlinkDriver(BaseDriver):
             await asyncio.to_thread(self._release_sticks)
             self._reply("stop", True, "")
         await super()._on_stop_cmd(envelope)
+
+    def _off_tick(self, work):
+        """Run a stick mode change away from the tick.
+
+        Entering OFFBOARD takes seconds and needs the setpoint stream to keep
+        running through it; doing it on the tick stops both that stream and
+        every publisher, so the twin's pose freezes mid-manoeuvre.
+        """
+        def run():
+            with self._mode_lock:
+                try:
+                    work()
+                except Exception:
+                    logger.exception("stick mode change failed")
+
+        threading.Thread(target=run, name="sticks", daemon=True).start()
 
     def _release_sticks(self):
         self._stick = None
