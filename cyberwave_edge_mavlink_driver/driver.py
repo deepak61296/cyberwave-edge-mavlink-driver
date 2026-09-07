@@ -275,6 +275,8 @@ class MavlinkDriver(BaseDriver):
         v = self.vehicle
         if cmd == "stop":
             return True, ""     # the sticks are already released; that is all stop asks
+        if cmd in contract.NEEDS_AIR and not v.in_air() and not v.armed():
+            return False, "not in air"
         if cmd == "takeoff":
             if v.in_air():
                 return False, "already in air"

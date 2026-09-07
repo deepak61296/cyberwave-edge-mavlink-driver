@@ -150,8 +150,32 @@ def test_arm_command_parsed_and_answered(driver):
     ("reboot", {}, ("reboot",)),
 ])
 def test_commands_reach_the_vehicle(driver, cmd, data, expected):
+    driver.link.state["armed"] = True       # a parked aircraft refuses the hold verbs
     send(driver, {"source_type": "tele", "command": cmd, "data": data})
     assert driver.vehicle.calls[-1] == expected
+
+
+@pytest.mark.parametrize("cmd", contract.NEEDS_AIR)
+def test_air_verbs_are_refused_on_the_ground(driver, cmd):
+    reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "not in air"
+    assert driver.vehicle.calls == []
+
+
+@pytest.mark.parametrize("cmd", ("brake", "hover", "emergency_stop"))
+def test_holding_with_the_motors_running_is_allowed(driver, cmd):
+    driver.link.state["armed"] = True
+    reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("hold",)]
+
+
+def test_kill_and_disarm_still_answer_a_parked_aircraft(driver):
+    """Cutting motors that are already off is not an error."""
+    for cmd in ("kill", "disarm"):
+        reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+        assert reply["status"] == "ok"
 
 
 def test_takeoff_in_the_air_is_refused_before_the_backend_runs(driver):
@@ -263,6 +287,7 @@ def test_our_own_reply_is_not_re_executed(driver):
 
 
 def test_discrete_command_releases_the_sticks_first(driver):
+    driver.link.state["armed"] = True
     driver._stick, driver._stick_at, driver._sticks_live = (1, 0, 0, 0), time.time(), True
     send(driver, {"source_type": "tele", "command": "land", "data": {}})
     assert driver._stick is None
@@ -272,6 +297,7 @@ def test_discrete_command_releases_the_sticks_first(driver):
 @pytest.mark.parametrize("urgent", contract.URGENT)
 def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     """A kill must not queue behind a takeoff that waits half a minute."""
+    driver.link.state["armed"] = True
     v, in_takeoff = driver.vehicle, threading.Event()
 
     def takeoff(altitude):
@@ -296,6 +322,7 @@ def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
 
 def test_stop_does_not_cancel_a_running_verb(driver):
     """Every SDK burst ends with a stop; a land sent during one must survive."""
+    driver.link.state["armed"], driver.link.state["alt"] = True, 3.0
     v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
 
     def land():
@@ -381,6 +408,7 @@ def test_the_tick_keeps_streaming_through_the_mode_change(driver):
 
 def test_sticks_are_dropped_while_a_verb_runs(driver):
     """A burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it."""
+    driver.link.state["armed"], driver.link.state["alt"] = True, 3.0
     v, in_land, finish = driver.vehicle, threading.Event(), threading.Event()
 
     def land():
@@ -406,6 +434,7 @@ def test_sticks_are_dropped_while_a_verb_runs(driver):
 
 def test_a_verb_during_prepare_waits_for_it(driver):
     """Two threads changing modes at once fight over the aircraft."""
+    driver.link.state["armed"], driver.link.state["alt"] = True, 3.0
     in_prepare, finish = threading.Event(), threading.Event()
 
     def prepare():
