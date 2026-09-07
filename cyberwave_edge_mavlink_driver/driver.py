@@ -20,6 +20,12 @@ from cyberwave.driver import (
     PublisherArgs,
     TopicSpec,
 )
+from cyberwave.manifest.driver_config import (
+    JOINT_UPDATE_TOPIC_SLUG,
+    TWIN_POSITION_TOPIC_SLUG,
+    TWIN_ROTATION_TOPIC_SLUG,
+    TWIN_TELEMETRY_TOPIC_SLUG,
+)
 
 from . import contract
 from .link import MavlinkLink
@@ -73,15 +79,21 @@ class MavlinkDriver(BaseDriver):
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_stick), protocol=sources,
                                command=CommandArgs(name=name, continuous=True, rate_hz=10))
         t = self.telemetry
-        self._publish(iface, "twin", "position", "TwinPositionPayload", t.position)
-        self._publish(iface, "twin", "rotation", "TwinRotationPayload", t.rotation)
-        self._publish(iface, "joint", "update", "JointStatesPayload", t.prop_joints)
-        self._publish(iface, "twin", "telemetry", "TwinTelemetryPayload", t.vehicle_state)
+        self._publish(iface, TWIN_POSITION_TOPIC_SLUG, "TwinPositionPayload", t.position)
+        self._publish(iface, TWIN_ROTATION_TOPIC_SLUG, "TwinRotationPayload", t.rotation)
+        self._publish(iface, JOINT_UPDATE_TOPIC_SLUG, "JointStatesPayload", t.prop_joints)
+        self._publish(iface, TWIN_TELEMETRY_TOPIC_SLUG, "TwinTelemetryPayload", t.vehicle_state)
 
     @staticmethod
-    def _publish(iface, namespace, leaf, schema, callback):
-        """A 10 Hz edge publisher that also runs with no controller attached."""
-        iface.add_publisher(TopicSpec(namespace=namespace, leaf=leaf, payload_schema_ref=schema),
+    def _publish(iface, slug, schema, callback):
+        """A 10 Hz edge publisher that also runs with no controller attached.
+
+        The topic is named by slug, not namespace and leaf: the SDK fills the
+        twin uuid into a slug, but for a bare namespace it only knows how to
+        do that for command, telemetry and joint/update, so pose would go out
+        on a topic with the placeholder still in it.
+        """
+        iface.add_publisher(TopicSpec(topic_slug=slug, payload_schema_ref=schema),
                             CallbackGroup(callback), protocol=ProtocolArgs(source_types=["edge"]),
                             publisher=PublisherArgs(rate_hz=10), operation_modes=ALL_MODES)
 
