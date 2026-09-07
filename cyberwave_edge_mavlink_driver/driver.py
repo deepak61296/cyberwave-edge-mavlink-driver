@@ -150,11 +150,16 @@ class MavlinkDriver(BaseDriver):
 
     async def on_tick(self):
         now = time.time()
-        if self._stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
+        stick = self._stick
+        if stick is not None and now - self._stick_at < contract.STICK_TIMEOUT_S:
             if not self._sticks_live:
                 self._sticks_live = True
                 await asyncio.to_thread(self.vehicle.prepare_sticks)
-            self.vehicle.send_velocity_body(*self._stick)
+                # switching to OFFBOARD takes a moment, and a discrete command
+                # arriving in it drops the sticks under us
+                stick = self._stick
+            if stick is not None:
+                self.vehicle.send_velocity_body(*stick)
         elif self._sticks_live:
             await asyncio.to_thread(self._release_sticks)
         # a cold-booted autopilot can miss the first stream request

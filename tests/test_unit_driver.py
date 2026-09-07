@@ -235,6 +235,17 @@ def test_fresh_stick_is_streamed_after_preparing_once(driver):
                                     ("velocity", (1.0, 0, 0, 0))]
 
 
+def test_stick_dropped_while_preparing_sends_nothing(driver):
+    def prepare():
+        driver.vehicle.calls.append(("prepare",))
+        driver._release_sticks()   # a discrete command lands mid mode change
+
+    driver.vehicle.prepare_sticks = prepare
+    driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
+    asyncio.run(driver.on_tick())
+    assert driver.vehicle.calls == [("prepare",), ("release",)]
+
+
 def test_stick_expiry_releases_once(driver):
     driver._on_stick({"source_type": "tele", "command": "move_forward", "data": {}})
     asyncio.run(driver.on_tick())
