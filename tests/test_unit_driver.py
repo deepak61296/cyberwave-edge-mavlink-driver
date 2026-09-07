@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cyberwave_edge_mavlink_driver import contract  # noqa: E402
 from cyberwave_edge_mavlink_driver.driver import MavlinkDriver  # noqa: E402
 from cyberwave_edge_mavlink_driver.telemetry import PROP_JOINTS, PropSpin  # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import Vehicle  # noqa: E402
 
 
 class FakeMQ:
@@ -30,23 +31,19 @@ class FakeMQ:
         pass
 
 
-class FakeVehicle:
+class FakeVehicle(Vehicle):
+    """Records the verbs; armed and in_air are the real ones."""
+
     name = "fake"
 
     def __init__(self, link):
-        self.link = link
+        super().__init__(link)
         self.calls = []
         self.result = (True, "")
         self.is_returning = False
 
-    def armed(self):
-        return bool(self.link.state["armed"])
-
     def mode_name(self):
         return "STABILIZE"
-
-    def in_air(self):
-        return self.link.state["alt"] > 0.5
 
     def returning(self):
         return self.is_returning
@@ -58,6 +55,18 @@ class FakeVehicle:
 
     def kill(self):
         self.calls.append(("kill",))
+        return self.result
+
+    def takeoff(self, altitude):
+        self.calls.append(("takeoff", altitude))
+        return self.result
+
+    def land(self):
+        self.calls.append(("land",))
+        return self.result
+
+    def return_to_home(self):
+        self.calls.append(("return_to_home",))
         return self.result
 
     def hold(self):
@@ -80,9 +89,6 @@ class FakeVehicle:
 
     def send_velocity_body(self, *a):
         self.calls.append(("velocity", a))
-
-    def tick(self):
-        pass
 
 
 @pytest.fixture
