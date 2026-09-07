@@ -234,6 +234,10 @@ class MavlinkDriver(BaseDriver):
                 self._reply(cmd, False, "superseded")
                 return
             logger.info("executing %s %s", cmd, data or "")
+            if cmd != "stop" and not self.link.connected():
+                # stop is the one verb the contract never refuses
+                self._reply(cmd, False, "not connected")
+                return
             # the contract: a discrete command shuts stick input down first
             self._release_sticks()
             try:

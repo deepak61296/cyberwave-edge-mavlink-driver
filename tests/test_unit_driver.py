@@ -215,6 +215,17 @@ def test_refused_arm_reply_carries_the_reason(driver):
     assert reply["reason"] == "Arm: RC not found"
 
 
+def test_every_verb_is_refused_without_a_heartbeat(driver):
+    driver.link.state["last_heartbeat"] = 0.0
+    for cmd in ("arm", "takeoff", "kill", "brake"):
+        reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+        assert reply["status"] == "error"
+        assert reply["reason"] == "not connected"
+    assert driver.vehicle.calls == []
+    reply = send(driver, {"source_type": "tele", "command": "stop", "data": {}})
+    assert reply["status"] == "ok"              # the contract's one exception
+
+
 def test_unknown_command_is_answered_not_dropped(driver):
     reply = send(driver, {"source_type": "tele", "command": "calibrate_compass", "data": {}})
     assert reply["status"] == "error"
