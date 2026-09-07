@@ -14,8 +14,8 @@ Two topics, for any twin whose asset declares `can_fly: true`.
 | `{prefix}cyberwave/twin/{twin_uuid}/telemetry` | publish | `vehicle_state`, `authority_lost` |
 
 Pose stays on `/position` and `/rotation`; per asset extras such as `/battery/status` and `/gimbal/attitude` are
-out of scope. The vocabulary is the 27 commands already published in the drone asset bundle plus four new verbs:
-`arm`, `disarm`, `brake`, `kill`. Nothing is renamed or removed. Three vendor stacks must fit the same text, and
+out of scope. The vocabulary is the 27 commands already published in the drone asset bundle plus five new verbs:
+`arm`, `disarm`, `brake`, `hover`, `kill`. Nothing is renamed or removed. Three vendor stacks must fit the same text, and
 they differ in ways the spec has to survive.
 
 | Stack | Why it differs |
@@ -70,6 +70,7 @@ phrases, for when the vehicle gives no words of its own: `not supported on this 
 | `brake` | none | Cancel any automation in progress, zero the sticks, hold position | `not connected` | state |
 | `kill` | `force` bool | Cut motors immediately | in air without `force`: `in air, send force to override`. No vendor path: `not supported on this vehicle` | state |
 | `emergency_stop` | none | Identical to `brake`. It must not cut motors | as `brake` | state |
+| `hover` | none | Identical to `brake`. It is the name the SDK's flight handle sends | as `brake` | state |
 | `takeoff` | `altitude` m, a request | Start motors if needed, leave the ground, climb toward `altitude`, hover. Reply carries `altitude_m`, the altitude actually used | `already in air`; vehicle refuses to arm, pass its words | state |
 | `land` | none | Descend and land. Where the vehicle has an operator confirm step, reply ok with `"pending_confirmation": true` and hold; a second `land` confirms | `not in air` | state |
 | `return_to_home` | none | Fly to the recorded home point and land | `no home set`, `no position fix` | state |
@@ -191,7 +192,7 @@ text does not define it and the SDK does not send it.
 
 ## 8. Open points
 
-- `arm`, `disarm`, `brake` and `kill` are not yet in `commands.supported`, and the SDK refuses anything outside that list before it reaches MQTT.
+- `arm`, `disarm`, `brake`, `hover` and `kill` are not yet in `commands.supported`, and the SDK refuses anything outside that list before it reaches MQTT.
 - Whether `edit` may ever be executed on a live aircraft is undecided. Until it is, a driver treats `edit` as scene editor traffic and drops it.
 - There is no known path to set the capability flags of section 4 on a workspace asset, so they stay catalog only for now.
 - `vehicle_state` and `authority_lost` have no named payload schemas on the telemetry topic. Section 5 and section 6 are the only definition they have.
