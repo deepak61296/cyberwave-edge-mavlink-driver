@@ -734,16 +734,22 @@ def test_px4_gimbal_rate_sends_a_rate_and_no_angle():
     assert link.m.attitudes[1][6:8] == (0.0, 0.0)
 
 
-def test_px4_gimbal_rate_asks_for_control_once_when_there_is_no_gimbal(monkeypatch):
-    """A stick refreshes at 10 Hz; a two second timeout on each would stall."""
-    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
+def test_px4_gimbal_rate_never_waits_for_the_claim(monkeypatch):
+    """The tick streams this. Waiting out the claim there stops the flight
+    setpoints, and PX4 drops OFFBOARD a second after they stop."""
+    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.3)
     link = gimbal_link({CONFIGURE: None})
     v = PX4(link)
+    t0 = time.time()
     for _ in range(3):
-        with pytest.raises(Refused, match="not supported on this vehicle"):
-            v.gimbal_rate(-10.0, 0.0)
-    assert link.m.commands() == [CONFIGURE]
+        v.gimbal_rate(-10.0, 0.0)       # the claim is out, nothing waits on it
+    assert time.time() - t0 < 0.1
+    assert link.m.commands() == [CONFIGURE]     # and it is asked for once
     assert link.m.attitudes == []
+    time.sleep(0.3)
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        v.gimbal_rate(-10.0, 0.0)
+    assert link.m.commands() == [CONFIGURE]
 
 
 @pytest.mark.parametrize("q, degrees", [

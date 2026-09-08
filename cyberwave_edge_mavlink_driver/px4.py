@@ -91,6 +91,7 @@ class PX4(Vehicle):
         super().__init__(link)
         self._heartbeat_at = 0.0
         self._gimbal = None     # None until we have asked the manager for control
+        self._claim_at = None   # when the tick's own CONFIGURE went out
 
     def tick(self):
         # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
@@ -227,9 +228,15 @@ class PX4(Vehicle):
         stick moves it a tenth of a degree. The message leaves a NaN
         quaternion alone, and that is what lets the rate add up. Nothing
         acks it, and PX4 stops the mount itself 2 s after the last one.
+
+        This runs on the tick, so the manager is claimed without waiting for
+        the ack: two seconds here is two seconds with no flight setpoint, and
+        PX4 gives up on OFFBOARD after one.
         """
         if self._gimbal is None:
-            self._take_gimbal()
+            self._gimbal = self._claim_gimbal()
+        if self._gimbal is None:
+            return                  # the claim is out; its ack lands on a later pass
         if not self._gimbal:
             raise Refused(NO_GIMBAL)
         self.link.m.mav.gimbal_manager_set_attitude_send(
@@ -323,7 +330,8 @@ class PX4(Vehicle):
 
         PX4 denies every pitchyaw command from anyone else, and an aircraft
         with no gimbal module running never answers at all: the commander
-        leaves both gimbal commands to a module that is not there.
+        leaves both gimbal commands to a module that is not there. This one
+        waits for the ack, so only a verb thread may call it.
         """
         ok, reason = self._acked(
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
@@ -332,3 +340,22 @@ class PX4(Vehicle):
         self._gimbal = ok
         if not ok:
             raise Refused(refusal(reason))
+
+    def _claim_gimbal(self):
+        """The same claim for the tick: send once, read the ack later.
+
+        True once the manager is ours, False when it was refused or nothing
+        answered in time, None while the ack is still out.
+        """
+        if not self.link.ready():
+            return None
+        cmd = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE
+        if self._claim_at is None:
+            self._claim_at = time.time()
+            self.link.send_command(cmd, self.link.m.mav.srcSystem,
+                                   self.link.m.mav.srcComponent, -1, -1,
+                                   0, 0, ALL_GIMBALS)
+        result = self.link.state["acks"].pop(cmd, None)
+        if result is not None:
+            return result == mavutil.mavlink.MAV_RESULT_ACCEPTED
+        return None if time.time() - self._claim_at < GIMBAL_ACK_S else False
