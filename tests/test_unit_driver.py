@@ -449,6 +449,33 @@ def test_an_urgent_verb_pre_empts_before_it_reaches_a_worker(driver):
     assert by_verb["takeoff"]["reason"] == "superseded"
 
 
+@pytest.mark.parametrize("cmd", ("cancel_takeoff", "hover"))
+def test_a_cancel_ends_the_verb_it_cancels(driver, cmd):
+    """A takeoff holds the aircraft until it is up; cancelling it after that
+    would hold at the altitude the cancel was sent to stop."""
+    driver.link.state["armed"] = True
+    v, in_takeoff = driver.vehicle, threading.Event()
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 30.0)
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+    t.start()
+    assert in_takeoff.wait(5.0)
+    t0 = time.time()
+    reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+    assert time.time() - t0 < 1.0
+    assert reply["status"] == "ok"
+    t.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["takeoff"]["reason"] == "superseded"
+    assert v.calls[-1] == ("hold",)
+
+
 def test_stop_does_not_cancel_a_running_verb(driver):
     """Every SDK burst ends with a stop; a land sent during one must survive."""
     driver.link.state["armed"], driver.link.state["alt"] = True, 3.0

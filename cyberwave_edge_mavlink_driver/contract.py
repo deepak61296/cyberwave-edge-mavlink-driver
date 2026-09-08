@@ -20,9 +20,12 @@ NOT_SUPPORTED = "not supported on this vehicle"
 MOTORS_RUNNING = "motors running"
 
 # These do not queue: whatever discrete verb is running gives way to them.
+# A cancel that waited for the verb it cancels would hold at the altitude it
+# was sent to stop, so the cancels are here with the holds they are named for.
 # stop is not one of them. The SDK ends every stick burst with a stop, so a
 # verb sent during a burst would be cancelled by the burst's own tail.
-URGENT = ("kill", "brake", "emergency_stop")
+URGENT = ("kill", "brake", "emergency_stop", "hover",
+          "cancel_takeoff", "cancel_landing", "cancel_return_to_home")
 
 # Nothing to land, cancel or hold on a parked aircraft: these are refused
 # "not in air" while it is on the ground with the motors off. With the motors
