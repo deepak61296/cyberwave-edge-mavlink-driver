@@ -884,6 +884,42 @@ def test_props_spin_from_pwm(driver):
     assert v["prop_4_joint"] == -30.0                # CW
 
 
+def test_prop_joints_come_from_the_twin(driver, monkeypatch):
+    """The DJI assets name their props prop_front_left_joint and so on."""
+    monkeypatch.delenv("CYBERWAVE_PROP_JOINTS", raising=False)
+    driver.twin.get_controllable_joint_names = lambda: [
+        "prop_front_right_joint", "camera_joint", "prop_back_left_joint",
+        "prop_front_left_joint", "prop_back_right_joint"]
+    asyncio.run(driver.on_configure())
+    assert driver.telemetry.props.joints == (
+        "prop_back_left_joint", "prop_back_right_joint",
+        "prop_front_left_joint", "prop_front_right_joint")
+    driver.link.state["servo_pwm"] = (1500, 1000, 1000, 1500)
+    v = driver.telemetry.prop_joints()["velocities"]
+    assert v["prop_back_left_joint"] == 30.0         # first in the list, CCW
+    assert v["prop_front_right_joint"] == -30.0      # last, CW
+
+
+def no_joints():
+    raise RuntimeError("the twin never answered")
+
+
+@pytest.mark.parametrize("lister", [None, list, lambda: ["arm_joint"], no_joints])
+def test_prop_joints_fall_back_to_the_px4vision_names(driver, monkeypatch, lister):
+    monkeypatch.delenv("CYBERWAVE_PROP_JOINTS", raising=False)
+    if lister is not None:
+        driver.twin.get_controllable_joint_names = lister
+    asyncio.run(driver.on_configure())
+    assert driver.telemetry.props.joints == PROP_JOINTS
+
+
+def test_prop_joints_can_be_named_by_hand(driver, monkeypatch):
+    monkeypatch.setenv("CYBERWAVE_PROP_JOINTS", " a_joint, b_joint ,c_joint,d_joint,e_joint")
+    driver.twin.get_controllable_joint_names = lambda: ["prop_1_joint"]
+    asyncio.run(driver.on_configure())
+    assert driver.telemetry.props.joints == ("a_joint", "b_joint", "c_joint", "d_joint")
+
+
 @pytest.mark.parametrize("connected, armed, in_air, returning, was_airborne, expected", [
     (False, True, True, False, True, "disconnected"),
     (True, False, False, False, False, "ready"),

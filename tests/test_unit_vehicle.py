@@ -604,3 +604,240 @@ def test_pick_vehicle_by_autopilot(autopilot, cls):
     link = link_with()
     link.autopilot = autopilot
     assert type(pick_vehicle(link)) is cls
+
+
+# --- PX4 gimbal, home point and compass -------------------------------
+
+CONFIGURE = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE
+PITCHYAW = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW
+SET_HOME = mavutil.mavlink.MAV_CMD_DO_SET_HOME
+CALIBRATE = mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION
+ACCEPTED = mavutil.mavlink.MAV_RESULT_ACCEPTED
+
+
+class GimbalMav(FakeMav):
+    """FakeMav plus what these verbs use: a COMMAND_INT, the gimbal manager
+    message, our own ids, and the message cache the pump keeps."""
+
+    def __init__(self, on_send=None):
+        super().__init__(on_send)
+        self.messages = {}          # last of each type, as pymavlink keeps them
+        self.ints = []
+        self.attitudes = []
+        self.mav.srcSystem, self.mav.srcComponent = 255, 190
+        self.mav.command_int_send = self._command_int_send
+        self.mav.gimbal_manager_set_attitude_send = lambda *a: self.attitudes.append(a)
+
+    def _command_int_send(self, sys, comp, frame, cmd, current, autocontinue, *rest):
+        self.ints.append((sys, comp, frame, cmd, current, autocontinue) + rest)
+        if self._on_send is not None:
+            self._on_send(sys, comp, cmd, 0, *rest)
+
+
+def gimbal_link(results=None):
+    """A link whose autopilot answers each command with the result we choose.
+
+    None means it says nothing at all, which is what a PX4 with no gimbal
+    module does: the commander leaves both gimbal commands to it.
+    """
+    results = {} if results is None else results
+
+    def autopilot(sys, comp, cmd, conf, *params):
+        result = results.get(cmd, ACCEPTED)
+        if result is not None:
+            link.state["acks"][cmd] = result
+
+    link = MavlinkLink("test:none")
+    link.m = GimbalMav(autopilot)
+    return link
+
+
+def test_px4_gimbal_point_takes_control_before_it_points():
+    link = gimbal_link()
+    PX4(link).gimbal_point(-30.0, 45.0, True)
+    assert link.m.commands() == [CONFIGURE, PITCHYAW]
+    assert link.m.sent[0][4:6] == (255, 190)    # our ids, or the next one is denied
+    angle = link.m.sent[1]
+    assert angle[4:6] == (-30.0, 45.0)
+    assert math.isnan(angle[6]) and math.isnan(angle[7])    # no rate beside an angle
+
+
+def test_px4_gimbal_point_locks_the_frame_when_absolute():
+    link = gimbal_link()
+    PX4(link).gimbal_point(-15.0, 90.0, True)
+    assert link.m.sent[1][8] == px4.EARTH_FRAME == 24
+
+
+def test_px4_relative_adds_to_where_the_gimbal_is():
+    """Relative is a delta here too: +15 on a mount at -45 is a target of
+    -30, and it was landing on +15 while the flags carried the frame."""
+    link = gimbal_link()
+    link.m.messages["MOUNT_ORIENTATION"] = types.SimpleNamespace(pitch=-45.0, yaw=0.0)
+    PX4(link).gimbal_point(15.0, NAN, False)
+    angle = link.m.sent[1]
+    assert angle[4] == -30.0
+    assert math.isnan(angle[5])             # the axis nobody commanded
+    assert angle[8] == px4.EARTH_FRAME      # the frame the readback is in
+
+
+def test_px4_cannot_move_relative_to_a_gimbal_it_cannot_read():
+    link = gimbal_link()
+    with pytest.raises(Refused, match="no gimbal attitude"):
+        PX4(link).gimbal_point(15.0, 0.0, False)
+    assert link.m.sent == []                # not even the configure
+
+
+def test_px4_absolute_does_not_add_the_readback():
+    """A target the caller gave in full is still sent as it was given."""
+    link = gimbal_link()
+    link.m.messages["MOUNT_ORIENTATION"] = types.SimpleNamespace(pitch=-45.0, yaw=0.0)
+    PX4(link).gimbal_point(-15.0, 90.0, True)
+    angle = link.m.sent[1]
+    assert angle[4:6] == (-15.0, 90.0)      # nothing added to them
+    assert math.isnan(angle[6]) and math.isnan(angle[7])
+    assert angle[8] == px4.EARTH_FRAME
+
+
+def test_px4_gimbal_point_ignores_a_slew_duration():
+    """DJI takes a rotation time; the gimbal manager has no field for one."""
+    link = gimbal_link()
+    PX4(link).gimbal_point(-20.0, 0.0, True, duration_s=2.0)
+    assert link.m.sent[1][4:6] == (-20.0, 0.0)
+    assert link.m.commands() == [CONFIGURE, PITCHYAW]
+
+
+def test_px4_gimbal_point_says_not_supported_when_nothing_answers(monkeypatch):
+    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
+    link = gimbal_link({CONFIGURE: None})
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        PX4(link).gimbal_point(-30.0, 0.0, True)
+
+
+def test_px4_gimbal_point_passes_the_fc_verdict_on():
+    link = gimbal_link({PITCHYAW: mavutil.mavlink.MAV_RESULT_DENIED})
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
+        PX4(link).gimbal_point(0.0, 0.0, True)
+
+
+def test_px4_gimbal_rate_sends_a_rate_and_no_angle():
+    """The command's rate fields are useless here: PX4 reads a NaN angle as
+    zero and every refresh drags the mount back to centre."""
+    link = gimbal_link()
+    v = PX4(link)
+    v.gimbal_rate(-10.0, 20.0)
+    v.gimbal_rate(0.0, 0.0)
+    assert link.m.commands() == [CONFIGURE]         # control is claimed once
+    q, _, pitch_rate, yaw_rate = link.m.attitudes[0][4:8]
+    assert all(math.isnan(x) for x in q)
+    assert pitch_rate == pytest.approx(math.radians(-10.0))
+    assert yaw_rate == pytest.approx(math.radians(20.0))
+    assert link.m.attitudes[1][6:8] == (0.0, 0.0)
+
+
+def test_px4_gimbal_rate_asks_for_control_once_when_there_is_no_gimbal(monkeypatch):
+    """A stick refreshes at 10 Hz; a two second timeout on each would stall."""
+    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
+    link = gimbal_link({CONFIGURE: None})
+    v = PX4(link)
+    for _ in range(3):
+        with pytest.raises(Refused, match="not supported on this vehicle"):
+            v.gimbal_rate(-10.0, 0.0)
+    assert link.m.commands() == [CONFIGURE]
+    assert link.m.attitudes == []
+
+
+@pytest.mark.parametrize("q, degrees", [
+    ((0.89239907, 0.09904575, -0.23911758, 0.36964384), (-30.0, 45.0)),
+    ((0.70105737, 0.09229596, -0.09229596, 0.70105737), (-15.0, 90.0)),
+    ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0)),
+])
+def test_px4_gimbal_attitude_reads_the_quaternion_back(q, degrees):
+    """The quaternions are the ones PX4 sent for those angles on the bench."""
+    link = gimbal_link()
+    link.m.messages["GIMBAL_DEVICE_ATTITUDE_STATUS"] = types.SimpleNamespace(q=q)
+    assert PX4(link).gimbal_attitude() == degrees
+
+
+def test_pitch_yaw_degrees_survives_straight_down():
+    """asin of a hair past -1 raises, and a float quaternion gets there."""
+    pitch, _ = px4.pitch_yaw_degrees((0.7071069, 0.0, -0.7071069, 0.0))
+    assert pitch == -90.0
+
+
+def test_px4_gimbal_attitude_falls_back_to_mount_orientation():
+    link = gimbal_link()
+    link.m.messages["MOUNT_ORIENTATION"] = types.SimpleNamespace(pitch=-12.3456, yaw=7.0)
+    assert PX4(link).gimbal_attitude() == (-12.35, 7.0)
+
+
+def test_px4_gimbal_attitude_is_none_with_no_mount_talking():
+    assert PX4(gimbal_link()).gimbal_attitude() is None
+
+
+def test_px4_set_home_goes_as_a_command_int():
+    """A COMMAND_LONG carries the latitude in a float32, which moves home."""
+    link = gimbal_link()
+    PX4(link).set_home(47.3977435, 8.5455937, 489.4)
+    sent, = link.m.ints
+    assert sent[2:4] == (mavutil.mavlink.MAV_FRAME_GLOBAL, SET_HOME)
+    assert sent[6] == 0                 # param1: 0 takes the point in the message
+    assert sent[10:12] == (473977435, 85455937)
+    assert sent[12] == pytest.approx(489.4)
+
+
+def test_px4_set_home_uses_the_aircraft_height_when_none_is_given():
+    """PX4 denies a home point with no altitude, so we send the one we have."""
+    link = gimbal_link()
+    link.m.messages["GLOBAL_POSITION_INT"] = types.SimpleNamespace(alt=489409)
+    PX4(link).set_home(47.0, 8.0, None)
+    assert link.m.ints[0][12] == pytest.approx(489.409)
+
+
+def test_px4_set_home_with_no_altitude_and_no_fix_refuses():
+    with pytest.raises(Refused, match="no position fix"):
+        PX4(gimbal_link()).set_home(47.0, 8.0, None)
+
+
+def test_px4_set_home_passes_the_refusal_on():
+    link = gimbal_link({SET_HOME: mavutil.mavlink.MAV_RESULT_DENIED})
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
+        PX4(link).set_home(47.0, 8.0, 489.0)
+
+
+def test_px4_compass_calibration_starts_the_magnetometer():
+    link = gimbal_link()
+    PX4(link).compass_calibration(True)
+    assert link.m.commands() == [CALIBRATE]
+    assert link.m.sent[0][4:6] == (0, 1)        # param2 = 1 is the mag
+
+
+def test_px4_compass_calibration_is_refused_with_the_motors_running():
+    link = gimbal_link()
+    link.state["armed"] = True
+    with pytest.raises(Refused, match="motors running"):
+        PX4(link).compass_calibration(True)
+    assert link.m.sent == []
+
+
+def test_px4_compass_cancel_goes_again_until_px4_takes_it():
+    """A cancel that lands in the middle of a sampling step is answered
+    TEMPORARILY_REJECTED by the commander and stops nothing."""
+    tries = []
+
+    def autopilot(sys, comp, cmd, conf, *params):
+        tries.append(params[:2])
+        link.state["acks"][cmd] = mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED
+        if len(tries) == 3:
+            link._texts.append((time.time(), "[cal] calibration cancelled"))
+
+    link = MavlinkLink("test:none")
+    link.m = GimbalMav(autopilot)
+    PX4(link).compass_calibration(False)
+    assert tries == [(0, 0)] * 3
+
+
+def test_px4_compass_cancel_gives_up_with_the_fc_verdict(monkeypatch):
+    monkeypatch.setattr(px4, "CALIBRATION_TRIES", 2)
+    link = gimbal_link({CALIBRATE: mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED})
+    with pytest.raises(Refused, match="MAV_RESULT_TEMPORARILY_REJECTED"):
+        PX4(link).compass_calibration(False)
