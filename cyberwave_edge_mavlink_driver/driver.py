@@ -296,8 +296,14 @@ class MavlinkDriver(BaseDriver):
         return source == "tele" or (source == "sim_tele" and self.accept_sim_tele)
 
     async def _on_command(self, envelope):
-        if self._accepts(envelope):
-            await asyncio.to_thread(self._run, envelope)
+        if not self._accepts(envelope):
+            return
+        if envelope.get("command") in contract.URGENT:
+            # here and not in _run: every queued verb holds a worker while it
+            # waits for the lock, and a kill behind a full pool would have to
+            # wait for one before it could even say it was coming
+            self.vehicle.abort.set()
+        await asyncio.to_thread(self._run, envelope)
 
     def _on_stick(self, envelope):
         if not self._accepts(envelope):
@@ -416,9 +422,7 @@ class MavlinkDriver(BaseDriver):
 
     def _run(self, envelope):
         cmd, data = envelope.get("command"), envelope.get("data") or {}
-        if cmd in contract.URGENT:
-            self.vehicle.abort.set()    # whatever is running gives way
-        with self._lock:
+        with self._lock:    # _on_command has already set abort for an urgent verb
             if cmd in contract.URGENT:
                 self.vehicle.abort.clear()
             elif self.vehicle.abort.is_set():

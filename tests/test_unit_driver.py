@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,11 @@ def send(d, envelope):
     """One envelope through the async handler, the reply if any."""
     asyncio.run(d._on_command(envelope))
     return d.client.mqtt.replies[-1] if d.client.mqtt.replies else None
+
+
+async def send_async(d, envelope):
+    """The same, on a loop the caller keeps running."""
+    await d._on_command(envelope)
 
 
 def airborne(d):
@@ -373,6 +379,37 @@ def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     assert reply["status"] == "ok"
     t.join(5.0)
     by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["takeoff"]["reason"] == "superseded"
+
+
+def test_an_urgent_verb_pre_empts_before_it_reaches_a_worker(driver):
+    """The executor's pool is small and the SDK ends every burst with a stop:
+    a kill queued behind them must not wait for a worker to free."""
+    v, in_takeoff, queued, gave_way = driver.vehicle, threading.Event(), [], []
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 5.0)     # ends the moment the abort is set
+        gave_way.append(time.time())
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    async def race():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        flying = asyncio.ensure_future(send_async(
+            driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+        while not in_takeoff.is_set():
+            await asyncio.sleep(0.01)
+        queued.append(time.time())      # the one worker is busy with the takeoff
+        killing = asyncio.ensure_future(send_async(
+            driver, {"source_type": "tele", "command": "kill", "data": {}}))
+        await asyncio.wait_for(asyncio.gather(flying, killing), 10.0)
+
+    asyncio.run(race())
+    assert gave_way[0] - queued[0] < 0.5
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["kill"]["status"] == "ok"
     assert by_verb["takeoff"]["reason"] == "superseded"
 
 
