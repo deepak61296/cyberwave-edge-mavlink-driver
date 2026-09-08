@@ -116,7 +116,8 @@ direction "both"). `status` is unchanged; the rest is additive:
 ### Twin telemetry
 
 - `cyberwave/twin/<uuid>/position` and `/rotation`: pose, steady 10 Hz
-- `cyberwave/joint/<uuid>/update`: prop spin from real motor PWM, 10 Hz
+- `cyberwave/joint/<uuid>/update`: prop spin from real motor PWM, 10 Hz, on
+  the prop joint names the twin itself lists
 - `cyberwave/twin/<uuid>/telemetry`: `{"type": "vehicle_state", "armed":
   bool, "mode": str, "flight_state": str, "motors_pwm": [...]}`, on every
   change and at least once a second. An aircraft with a gimbal adds
@@ -211,6 +212,24 @@ python -m cyberwave_edge_mavlink_driver.main
 
 Watch the twin in the Cyberwave viewer (LIVE tab) and fly it with the SDK
 snippet above.
+
+### Environment
+
+| Variable | Default | What it is |
+|---|---|---|
+| `CYBERWAVE_API_KEY` | — | required |
+| `CYBERWAVE_TWIN_UUID` | — | required, the twin to fly |
+| `MAVLINK_CONNECTION` | `tcp:127.0.0.1:5760` | serial path, `udpin:host:port`, or SITL TCP |
+| `CYBERWAVE_ACCEPT_SIM_TELE` | `0` | also execute `sim_tele` commands; SITL and bench rigs only |
+| `CYBERWAVE_REGISTRY_ID` | `holybro/px4vision` | the catalog asset the driver registers as |
+| `CYBERWAVE_PROP_JOINTS` | discovered from the twin | prop joints by hand, comma-separated, in spin order |
+
+The prop joints are read from the twin at start: the joint names that
+contain `prop`, sorted, up to four. So a DJI asset animates on
+`prop_front_left_joint` and a px4vision one on `prop_1_joint`, with no
+setting to change. A twin that exposes no joints falls back to
+`prop_1_joint..prop_4_joint`, and `CYBERWAVE_PROP_JOINTS` overrides both —
+position in that list decides which way each prop turns.
 
 ## Status / roadmap
 
