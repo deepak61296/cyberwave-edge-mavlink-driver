@@ -319,6 +319,17 @@ def test_px4_stops_the_motors_when_the_takeoff_fails(monkeypatch):
     assert link.state["armed"] is False
 
 
+def test_a_takeoff_cut_short_leaves_the_motors_to_the_verb_that_cut_it():
+    """cancel_takeoff a metre up is a hold, not a reason to stop the motors."""
+    link = link_with()
+    link.state["armed"] = True
+    v = ArduPilot(link)
+    v.abort.set()
+    assert v.takeoff_failed("armed but never left the ground") == (
+        False, "armed but never left the ground")
+    assert link.m.sent == []
+
+
 def test_ardupilot_takeoff_gives_way_to_a_kill_while_it_climbs():
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:

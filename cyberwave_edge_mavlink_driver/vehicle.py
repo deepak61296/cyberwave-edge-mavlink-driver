@@ -113,7 +113,14 @@ class Vehicle:
     def takeoff_failed(self, reason):
         """(False, reason), with the motors stopped if the aircraft never left
         the ground. Otherwise it is spinning props on a parked airframe until
-        the autopilot's own disarm delay runs out."""
+        the autopilot's own disarm delay runs out.
+
+        Not when something cut the takeoff short: a cancel a metre up is a
+        stop and a hold, and the verb that pre-empted us says what happens
+        to the motors.
+        """
+        if self.abort.is_set():
+            return False, reason
         if self.armed() and not self.in_air():
             logger.warning("takeoff failed on the ground, disarming: %s", reason)
             self.set_armed(False, force=True, timeout=3.0)
