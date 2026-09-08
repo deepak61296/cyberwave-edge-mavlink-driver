@@ -654,13 +654,12 @@ def gimbal_link(results=None):
 
 def test_px4_gimbal_point_takes_control_before_it_points():
     link = gimbal_link()
-    PX4(link).gimbal_point(-30.0, 45.0, False)
+    PX4(link).gimbal_point(-30.0, 45.0, True)
     assert link.m.commands() == [CONFIGURE, PITCHYAW]
     assert link.m.sent[0][4:6] == (255, 190)    # our ids, or the next one is denied
     angle = link.m.sent[1]
     assert angle[4:6] == (-30.0, 45.0)
     assert math.isnan(angle[6]) and math.isnan(angle[7])    # no rate beside an angle
-    assert angle[8] == 0                                    # body frame
 
 
 def test_px4_gimbal_point_locks_the_frame_when_absolute():
@@ -669,10 +668,40 @@ def test_px4_gimbal_point_locks_the_frame_when_absolute():
     assert link.m.sent[1][8] == px4.EARTH_FRAME == 24
 
 
+def test_px4_relative_adds_to_where_the_gimbal_is():
+    """Relative is a delta here too: +15 on a mount at -45 is a target of
+    -30, and it was landing on +15 while the flags carried the frame."""
+    link = gimbal_link()
+    link.m.messages["MOUNT_ORIENTATION"] = types.SimpleNamespace(pitch=-45.0, yaw=0.0)
+    PX4(link).gimbal_point(15.0, NAN, False)
+    angle = link.m.sent[1]
+    assert angle[4] == -30.0
+    assert math.isnan(angle[5])             # the axis nobody commanded
+    assert angle[8] == px4.EARTH_FRAME      # the frame the readback is in
+
+
+def test_px4_cannot_move_relative_to_a_gimbal_it_cannot_read():
+    link = gimbal_link()
+    with pytest.raises(Refused, match="no gimbal attitude"):
+        PX4(link).gimbal_point(15.0, 0.0, False)
+    assert link.m.sent == []                # not even the configure
+
+
+def test_px4_absolute_does_not_add_the_readback():
+    """A target the caller gave in full is still sent as it was given."""
+    link = gimbal_link()
+    link.m.messages["MOUNT_ORIENTATION"] = types.SimpleNamespace(pitch=-45.0, yaw=0.0)
+    PX4(link).gimbal_point(-15.0, 90.0, True)
+    angle = link.m.sent[1]
+    assert angle[4:6] == (-15.0, 90.0)      # nothing added to them
+    assert math.isnan(angle[6]) and math.isnan(angle[7])
+    assert angle[8] == px4.EARTH_FRAME
+
+
 def test_px4_gimbal_point_ignores_a_slew_duration():
     """DJI takes a rotation time; the gimbal manager has no field for one."""
     link = gimbal_link()
-    PX4(link).gimbal_point(-20.0, 0.0, False, duration_s=2.0)
+    PX4(link).gimbal_point(-20.0, 0.0, True, duration_s=2.0)
     assert link.m.sent[1][4:6] == (-20.0, 0.0)
     assert link.m.commands() == [CONFIGURE, PITCHYAW]
 
@@ -681,13 +710,13 @@ def test_px4_gimbal_point_says_not_supported_when_nothing_answers(monkeypatch):
     monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
     link = gimbal_link({CONFIGURE: None})
     with pytest.raises(Refused, match="not supported on this vehicle"):
-        PX4(link).gimbal_point(-30.0, 0.0, False)
+        PX4(link).gimbal_point(-30.0, 0.0, True)
 
 
 def test_px4_gimbal_point_passes_the_fc_verdict_on():
     link = gimbal_link({PITCHYAW: mavutil.mavlink.MAV_RESULT_DENIED})
     with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
-        PX4(link).gimbal_point(0.0, 0.0, False)
+        PX4(link).gimbal_point(0.0, 0.0, True)
 
 
 def test_px4_gimbal_rate_sends_a_rate_and_no_angle():

@@ -58,7 +58,10 @@ class Bench:
             self.failures.append(f"{what}: wanted {expect!r}, got {got!r}")
         return got
 
-    def attitude(self, tag):
+    def attitude(self, tag, settle=0.0):
+        """Where the mount is, after any time it needs to get there."""
+        if settle:
+            time.sleep(settle)
         print(f"   gimbal attitude {tag}: {self.v.gimbal_attitude()}")
 
     def stick(self, pitch_dps, yaw_dps, seconds):
@@ -81,22 +84,25 @@ class Bench:
 def gimbal_round(bench, where):
     print(f"\n--- gimbal, {where} ---")
     bench.attitude("at rest")
-    bench.call("gimbal_point(-30, 45, absolute=False)",
-               lambda: bench.v.gimbal_point(-30.0, 45.0, False), expect="accepted")
-    bench.attitude("after the body angle")
+    bench.call("gimbal_point(-45, 0, absolute=True)",
+               lambda: bench.v.gimbal_point(-45.0, 0.0, True), expect="accepted")
+    bench.attitude("after the absolute -45", settle=1.5)
+    bench.call("gimbal_point(+15, 0, absolute=False)",
+               lambda: bench.v.gimbal_point(15.0, 0.0, False), expect="accepted")
+    bench.attitude("after the relative +15, wanted about -30", settle=1.5)
     bench.call("gimbal_point(-15, 90, absolute=True)",
                lambda: bench.v.gimbal_point(-15.0, 90.0, True), expect="accepted")
-    bench.attitude("after the earth angle")
+    bench.attitude("after the earth angle", settle=1.5)
     bench.call("gimbal_point(-20, 0, absolute=False, duration_s=2.0)",
                lambda: bench.v.gimbal_point(-20.0, 0.0, False, duration_s=2.0),
                expect="accepted")
-    bench.attitude("after the one with a duration")
-    bench.call("gimbal_point(0, 0, absolute=False)",
-               lambda: bench.v.gimbal_point(0.0, 0.0, False), expect="accepted")
+    bench.attitude("after the one with a duration", settle=1.5)
+    bench.call("gimbal_point(0, 0, absolute=True)",
+               lambda: bench.v.gimbal_point(0.0, 0.0, True), expect="accepted")
     bench.stick(-10.0, 0.0, 3.0)
     bench.stick(0.0, 20.0, 2.0)
-    bench.call("gimbal_point(0, 0, absolute=False)",
-               lambda: bench.v.gimbal_point(0.0, 0.0, False), expect="accepted")
+    bench.call("gimbal_point(0, 0, absolute=True)",
+               lambda: bench.v.gimbal_point(0.0, 0.0, True), expect="accepted")
 
 
 def home_round(bench, where):

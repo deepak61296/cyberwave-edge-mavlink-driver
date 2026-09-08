@@ -191,20 +191,33 @@ class PX4(Vehicle):
     # -- gimbal, home point, compass ------------------------------------
 
     def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
-        """DO_GIMBAL_MANAGER_PITCHYAW, once the manager is ours."""
+        """DO_GIMBAL_MANAGER_PITCHYAW, once the manager is ours.
+
+        The command carries a target, never a delta, so a relative move is
+        read back and added here and goes on the wire as the angle it comes
+        to. The lock flags are not the place for it: they say which frame
+        the angle is measured in, and sending a body angle instead left
+        +15 after -45 sitting at +15 rather than -30.
+        """
         if duration_s is not None:
             # DJI takes a rotation time; the gimbal manager has no such field
             # and moves at the mount's own speed, so there is nothing to send
             logger.info("px4 has no gimbal slew time, ignoring duration %.1fs", duration_s)
+        if not absolute:
+            here = self.gimbal_attitude()
+            if here is None:
+                raise Refused("no gimbal attitude to move from")
+            # an axis left at NaN stays NaN through the addition, and so
+            # stays the axis nobody commanded
+            pitch_deg, yaw_deg = here[0] + pitch_deg, here[1] + yaw_deg
         self._take_gimbal()
         ok, reason = self._acked(
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
             float(pitch_deg), float(yaw_deg), NAN, NAN,
-            EARTH_FRAME if absolute else 0, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
+            EARTH_FRAME, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
         if not ok:
             raise Refused(refusal(reason))
-        logger.info("gimbal to pitch %.1f yaw %.1f (%s)", pitch_deg, yaw_deg,
-                    "earth" if absolute else "body")
+        logger.info("gimbal to pitch %.1f yaw %.1f", pitch_deg, yaw_deg)
 
     def gimbal_rate(self, pitch_dps, yaw_dps):
         """GIMBAL_MANAGER_SET_ATTITUDE with a rate and no angle.
