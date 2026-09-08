@@ -97,6 +97,15 @@ class Vehicle:
         logger.warning("force disarm sent")
         return self.set_armed(False, force=True, timeout=3.0)
 
+    def takeoff_failed(self, reason):
+        """(False, reason), with the motors stopped if the aircraft never left
+        the ground. Otherwise it is spinning props on a parked airframe until
+        the autopilot's own disarm delay runs out."""
+        if self.armed() and not self.in_air():
+            logger.warning("takeoff failed on the ground, disarming: %s", reason)
+            self.set_armed(False, force=True, timeout=3.0)
+        return False, reason
+
     def set_home_here(self):
         return self._acked(mavutil.mavlink.MAV_CMD_DO_SET_HOME, 1)
 

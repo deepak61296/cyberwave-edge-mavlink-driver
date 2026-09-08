@@ -89,7 +89,7 @@ class ArduPilot(Vehicle):
                 return self._airborne()
             if self.abort.wait(2.0):    # the pause between tries, unless cut short
                 break
-        return False, "NAV_TAKEOFF not accepted"
+        return self.takeoff_failed("NAV_TAKEOFF not accepted")
 
     def _airborne(self):
         """Hold the reply until the aircraft is actually up, as PX4 does.
@@ -101,7 +101,7 @@ class ArduPilot(Vehicle):
                       AIRBORNE_S):
             logger.info("airborne at %.1f m", self.link.state["alt"])
             return True, ""
-        return False, "armed but never left the ground"
+        return self.takeoff_failed("armed but never left the ground")
 
     def land(self):
         return self.set_mode("LAND")

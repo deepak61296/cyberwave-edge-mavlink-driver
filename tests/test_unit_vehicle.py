@@ -275,6 +275,50 @@ def test_ardupilot_takeoff_waits_for_the_aircraft_to_leave_the_ground(monkeypatc
     assert ArduPilot(link).takeoff(3.0) == (True, "")
 
 
+@pytest.mark.parametrize("takes_the_takeoff", [True, False])
+def test_ardupilot_stops_the_motors_when_the_takeoff_fails(monkeypatch,
+                                                           takes_the_takeoff):
+    """Refused NAV_TAKEOFF or no climb: either way the props are still
+    turning on a parked aircraft until the FC's own disarm delay."""
+    monkeypatch.setattr(ardupilot, "AIRBORNE_S", 0.3)
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = p1 == 1
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = (mavutil.mavlink.MAV_RESULT_ACCEPTED
+                                       if takes_the_takeoff
+                                       else mavutil.mavlink.MAV_RESULT_DENIED)
+
+    link = link_with(autopilot)
+    v = ArduPilot(link)
+    v.abort.wait = lambda timeout=None: False   # no pause between the tries
+    ok, reason = v.takeoff(3.0)
+    assert not ok
+    assert reason == ("armed but never left the ground" if takes_the_takeoff
+                      else "NAV_TAKEOFF not accepted")
+    assert link.state["armed"] is False
+    disarm = [s for s in link.m.sent if s[2] == ARM and s[4] == 0]
+    assert disarm and disarm[-1][5] == 21196        # force, whatever it thinks
+
+
+def test_px4_stops_the_motors_when_the_takeoff_fails(monkeypatch):
+    monkeypatch.setattr(px4, "TAKEOFF_CONFIRM_S", 0.3)
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = px4.custom_mode(int(p2), int(p3))
+        elif cmd == ARM:
+            link.state["armed"] = p1 == 1
+
+    link = link_with(autopilot)
+    ok, reason = PX4(link).takeoff(3.0)
+    assert (ok, reason) == (False, "armed but never left the ground")
+    assert link.state["armed"] is False
+
+
 def test_ardupilot_takeoff_gives_way_to_a_kill_while_it_climbs():
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:

@@ -150,7 +150,7 @@ class PX4(Vehicle):
         if self.in_air():
             return False, (f"still climbing, {self.link.state['alt']:.1f} m of "
                            f"{altitude:.1f} m after {TAKEOFF_CONFIRM_S:.0f}s")
-        return False, "armed but never left the ground"
+        return self.takeoff_failed("armed but never left the ground")
 
     def takeoff_altitude(self, asked):
         # takeoff here returns only once the altitude is reached, so the
