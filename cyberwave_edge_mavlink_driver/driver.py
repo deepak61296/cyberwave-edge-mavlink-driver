@@ -187,7 +187,10 @@ class MavlinkDriver(BaseDriver):
 
     async def on_reconnect(self):
         mqtt = self.client.mqtt
-        mqtt.connect()
+        # paho's connect is a blocking socket call and then up to ten seconds
+        # of sleeps waiting for CONNACK; on the loop that is a driver with no
+        # ticks, so no stick zeros, no pose and no link watch while it runs
+        await asyncio.to_thread(mqtt.connect)
         for _ in range(100):
             if mqtt.connected:
                 return True

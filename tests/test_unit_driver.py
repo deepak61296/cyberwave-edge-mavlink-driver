@@ -356,6 +356,28 @@ def test_discrete_command_releases_the_sticks_first(driver):
     assert driver.vehicle.calls[0] == ("release",)
 
 
+def test_on_reconnect_does_not_hold_the_event_loop(driver):
+    """paho's connect blocks; the tick has to keep running through it."""
+    started, connected_at, ticked_at = threading.Event(), [], []
+
+    def connect():
+        started.set()
+        time.sleep(0.3)
+        connected_at.append(time.time())
+    driver.client.mqtt.connect = connect
+
+    async def reconnect():
+        task = asyncio.ensure_future(driver.on_reconnect())
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.05)
+        ticked_at.append(time.time())       # a tick, while the connect runs
+        return await task
+
+    assert asyncio.run(reconnect()) is True
+    assert ticked_at[0] < connected_at[0]
+
+
 def test_a_stick_that_lands_mid_verb_does_not_survive_it(driver):
     """Its check ran before the verb took the aircraft and its store lands
     after the verb let the sticks go: it must not sit there and then stream."""
