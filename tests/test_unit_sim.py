@@ -206,12 +206,15 @@ def test_an_unknown_profile_flies_the_quad():
 
 # --- the DJI profile --------------------------------------------------
 
-def test_dji_has_no_arm_disarm_or_kill():
-    v, _ = sim("sim://dji")
-    assert v.set_armed(True) == (False, NOT_SUPPORTED)
-    assert v.set_armed(False) == (False, NOT_SUPPORTED)
+def test_dji_arming_is_implicit_and_the_motor_cut_has_no_key():
+    v, clock = sim("sim://dji")
+    assert v.set_armed(True) == (True, "", {"implicit": True})
+    assert v.set_armed(False) == (True, "", {"implicit": True})
+    assert not v.armed()                # ok, and nothing happened
     assert v.kill() == (False, NOT_SUPPORTED)
-    assert not v.armed()
+    flying(v, clock, 1.2)
+    assert v.set_armed(False, force=True) == (False, NOT_SUPPORTED)
+    assert v.armed()
 
 
 def test_dji_takes_off_to_its_own_height():
@@ -374,7 +377,8 @@ def test_driver_runs_the_discrete_verbs_against_the_dji_sim(dji):
     assert dji.vehicle.name == "sim-dji"
 
     reply = run(dji, "arm")
-    assert (reply["status"], reply["reason"]) == ("error", NOT_SUPPORTED)
+    assert (reply["status"], reply["implicit"], reply["armed"]) == ("ok", True, False)
+    assert run(dji, "disarm")["implicit"] is True
     assert run(dji, "kill")["reason"] == NOT_SUPPORTED
     assert run(dji, "land")["reason"] == "not in air"
     assert run(dji, "brake")["reason"] == "not in air"
@@ -387,6 +391,7 @@ def test_driver_runs_the_discrete_verbs_against_the_dji_sim(dji):
     assert run(dji, "takeoff")["reason"] == "already in air"
     assert run(dji, "kill")["reason"] == "in air, send force to override"
     assert run(dji, "kill", force=True)["reason"] == NOT_SUPPORTED
+    assert run(dji, "disarm", force=True)["reason"] == NOT_SUPPORTED
     assert run(dji, "hover")["status"] == "ok"
     assert run(dji, "no_such_verb")["reason"] == NOT_SUPPORTED
 

@@ -190,7 +190,8 @@ in CI, in a demo and in the fleet without SITL. `sim://quad` is a generic
 aircraft, `sim://dji` answers the way `docs/DJI-MAPPING.md` says a Mini 4 Pro
 does — takeoff to a fixed 1.2 m whatever was asked for, a landing that parks
 at 0.7 m until a second `land` confirms it, the same confirm on
-`return_to_home`, no `arm`, `disarm` or `kill`, and a gimbal that pitches but
+`return_to_home`, `arm` and `disarm` answering ok with `implicit` because the
+motors start with the takeoff, no `kill` at all, and a gimbal that pitches but
 does not yaw. `tools/conformance.py --profile dji` in the project root expects
 those refusals.
 

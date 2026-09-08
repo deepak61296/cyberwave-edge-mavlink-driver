@@ -45,14 +45,14 @@ DJI_MODES = {None: "HOVER", "ground": "READY", "takeoff": "TAKE_OFF",
 
 # gimbal is (pitch, yaw) limits in degrees; None is an axis that does not steer
 Profile = collections.namedtuple(
-    "Profile", "name can_arm can_kill takeoff_m confirm gimbal modes")
+    "Profile", "name implicit_arm can_kill takeoff_m confirm gimbal modes")
 
-QUAD = Profile("quad", True, True, None, False,
+QUAD = Profile("quad", False, True, None, False,
                ((-90.0, 30.0), (-160.0, 160.0)), QUAD_MODES)
 # The Mini 4 Pro as docs/DJI-MAPPING.md describes it: no arming key, no motor
 # cut, a fixed takeoff height, an operator confirm on land and go home, and a
 # gimbal whose yaw is not independently steerable.
-DJI = Profile("dji", False, False, DJI_TAKEOFF_M, True,
+DJI = Profile("dji", True, False, DJI_TAKEOFF_M, True,
               ((-90.0, 60.0), None), DJI_MODES)
 
 PROFILES = {"quad": QUAD, "dji": DJI}
@@ -145,8 +145,13 @@ class SimVehicle(Vehicle):
     # -- verbs -----------------------------------------------------------
 
     def set_armed(self, arm, force=False, timeout=5.0):
-        if not self.profile.can_arm:
-            return False, contract.NOT_SUPPORTED
+        if self.profile.implicit_arm:
+            # no arming key here: the motors start with the takeoff and stop
+            # with the landing, so on the ground the verb is an ok that does
+            # nothing. In the air there is no key to stop them with either.
+            if not arm and self.in_air():
+                return False, contract.NOT_SUPPORTED
+            return True, "", {"implicit": True}
         self.link.state["armed"] = bool(arm)
         if not arm:
             self.task, self.pending, self.stick = None, None, ZERO
