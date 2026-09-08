@@ -1112,6 +1112,14 @@ def test_manifest_says_what_the_verbs_take():
         assert entries[verb]["description"]
 
 
+def test_nothing_pytest_collects_flies_an_aircraft():
+    """The live scripts are in tools/ now: bare pytest collects tests/ with
+    its own pattern, so a name like test_b2_*.py here would take off."""
+    here = Path(__file__).resolve().parent
+    assert sorted(p.name for p in here.glob("test_*.py")) == [
+        "test_unit_driver.py", "test_unit_link.py", "test_unit_vehicle.py"]
+
+
 def test_the_committed_catalog_is_the_generated_one():
     """cw-driver.yml is written by --write-cw-driver; it must not go stale."""
     on_disk = Path(__file__).resolve().parents[1] / "cw-driver.yml"
