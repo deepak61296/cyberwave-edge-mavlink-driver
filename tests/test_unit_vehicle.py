@@ -428,6 +428,7 @@ def test_ardupilot_takes_the_time_a_duration_asks_for():
 def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
     """It is streamed from the tick, which may not block on anything."""
     link = link_with()
+    link.state["gimbal"] = (0.0, 0.0)
     t0 = time.time()
     ArduPilot(link).gimbal_rate(-30.0, 0.0)
     assert time.time() - t0 < 0.5
@@ -439,15 +440,38 @@ def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
 
 def test_ardupilot_gimbal_rate_zeroes_the_axis_nobody_asked_for():
     link = link_with()
+    link.state["gimbal"] = (0.0, 0.0)
     ArduPilot(link).gimbal_rate(-15.0, NAN)
     assert link.m.sent[-1][6:8] == (-15.0, 0.0)
 
 
 def test_ardupilot_gimbal_refusal_carries_the_fc_result():
     link = link_with(lambda *a: link.state["acks"].__setitem__(
-        PITCHYAW, mavutil.mavlink.MAV_RESULT_UNSUPPORTED))
-    with pytest.raises(Refused, match="MAV_RESULT_UNSUPPORTED"):
+        PITCHYAW, mavutil.mavlink.MAV_RESULT_DENIED))
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
         ArduPilot(link).gimbal_point(0.0, 0.0, True)
+
+
+@pytest.mark.parametrize("result", [mavutil.mavlink.MAV_RESULT_UNSUPPORTED, None])
+def test_ardupilot_says_not_supported_the_way_px4_does(result):
+    """An aircraft that has no gimbal must read the same on both backends."""
+    def autopilot(*a):
+        if result is not None:
+            link.state["acks"][PITCHYAW] = result
+
+    link = link_with(autopilot)
+    v = ArduPilot(link)
+    v.abort.wait = lambda timeout=None: False       # do not sit out the ack
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        v.gimbal_point(-30.0, 0.0, True)
+
+
+def test_ardupilot_will_not_turn_a_gimbal_it_has_never_heard_from():
+    """gimbal_rotate_speed replied ok on an aircraft with no mount at all."""
+    link = link_with()
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        ArduPilot(link).gimbal_rate(-15.0, 0.0)
+    assert link.m.sent == []
 
 
 def test_ardupilot_reads_the_gimbal_angle_off_the_link():

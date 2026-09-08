@@ -29,6 +29,19 @@ class Refused(Exception):
     """
 
 
+def refusal(reason):
+    """A refusal in the contract's words where they fit, else the FC's own.
+
+    Silence and UNSUPPORTED say the same thing to a caller: this aircraft
+    does not do that. Everything else is the autopilot's own verdict and
+    goes back untouched. Both backends answer the camera through this, so
+    the same aircraft trouble reads the same whichever one is flying.
+    """
+    if reason.startswith("no COMMAND_ACK") or reason == "MAV_RESULT_UNSUPPORTED":
+        return NOT_SUPPORTED
+    return reason
+
+
 def result_name(result):
     """A MAV_RESULT number as its enum name."""
     return getattr(mavutil.mavlink.enums["MAV_RESULT"].get(result),

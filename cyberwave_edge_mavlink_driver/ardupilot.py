@@ -5,7 +5,8 @@ import time
 
 from pymavlink import mavutil
 
-from .vehicle import NAN, Refused, Vehicle
+from .contract import NOT_SUPPORTED
+from .vehicle import NAN, Refused, Vehicle, refusal
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,11 @@ class ArduPilot(Vehicle):
         self._angles(pitch_deg, yaw_deg)
 
     def gimbal_rate(self, pitch_dps, yaw_dps):
-        # streamed from the tick, so it sends and does not wait for the ack
+        # streamed from the tick, so it sends and does not wait for the ack.
+        # Nothing acks it either, so a mount that has never reported an angle
+        # is the one sign there is none to turn, and PX4 says the same words.
+        if self.gimbal_attitude() is None:
+            raise Refused(NOT_SUPPORTED)
         pitch_dps, yaw_dps = _both(pitch_dps, yaw_dps, (0.0, 0.0))
         self.link.send_command(mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
                                NAN, NAN, pitch_dps, yaw_dps, 0, 0, 0)
@@ -169,7 +174,7 @@ class ArduPilot(Vehicle):
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
             pitch_deg, yaw_deg, NAN, NAN, 0, 0, 0)
         if not ok:
-            raise Refused(reason)
+            raise Refused(refusal(reason))
 
     # -- home and compass -------------------------------------------------
 

@@ -12,8 +12,9 @@ import time
 
 from pymavlink import mavutil
 
+from .contract import NOT_SUPPORTED
 from .link import BODY_NED
-from .vehicle import Refused, Vehicle, result_name
+from .vehicle import Refused, Vehicle, refusal, result_name
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,6 @@ ALL_GIMBALS = 0             # device id 0: whichever mount the manager has
 GIMBAL_ACK_S = 2.0
 CALIBRATION_S = 3.0         # the ack is quick; the [cal] line follows it
 CALIBRATION_TRIES = 8       # a cancel lands between sampling steps, not during one
-NO_GIMBAL = "not supported on this vehicle"
 
 
 def custom_mode(main, sub=0):
@@ -53,18 +53,6 @@ def mode_name(custom):
         return "AUTO." + subs.get(sub, str(sub))
     mains = {v: k for k, v in MAIN.items()}
     return mains.get(main, f"MODE({main},{sub})")
-
-
-def refusal(reason):
-    """A refusal in the contract's words where they fit, else the FC's own.
-
-    Silence and UNSUPPORTED say the same thing to a caller: this aircraft
-    does not do that. Everything else is the autopilot's own verdict and
-    goes back untouched.
-    """
-    if reason.startswith("no COMMAND_ACK") or reason == "MAV_RESULT_UNSUPPORTED":
-        return NO_GIMBAL
-    return reason
 
 
 def pitch_yaw_degrees(q):
@@ -238,7 +226,7 @@ class PX4(Vehicle):
         if self._gimbal is None:
             return                  # the claim is out; its ack lands on a later pass
         if not self._gimbal:
-            raise Refused(NO_GIMBAL)
+            raise Refused(NOT_SUPPORTED)
         self.link.m.mav.gimbal_manager_set_attitude_send(
             self.link.m.target_system, self.link.m.target_component,
             0, ALL_GIMBALS, [NAN] * 4, NAN,
