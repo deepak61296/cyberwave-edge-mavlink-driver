@@ -7,7 +7,7 @@ import time
 from pymavlink import mavutil
 
 from .contract import MOTORS_RUNNING, NOT_SUPPORTED
-from .link import BODY_OFFSET_NED
+from .link import BODY_OFFSET_NED, GLOBAL_RELATIVE_ALT
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +153,10 @@ class Vehicle:
         self.link.send_command(cmd, *params)
         return self._await_ack(cmd, timeout)
 
-    def _acked_int(self, cmd, *params, x=0, y=0, z=0.0, timeout=5.0):
+    def _acked_int(self, cmd, *params, x=0, y=0, z=0.0,
+                   frame=GLOBAL_RELATIVE_ALT, timeout=5.0):
         """The same, as COMMAND_INT, for a command that carries coordinates."""
-        self.link.send_command_int(cmd, *params, x=x, y=y, z=z)
+        self.link.send_command_int(cmd, *params, x=x, y=y, z=z, frame=frame)
         return self._await_ack(cmd, timeout)
 
     def _await_ack(self, cmd, timeout=5.0):
@@ -212,8 +213,16 @@ class Vehicle:
         """(pitch, yaw) in degrees, or None when there is no gimbal to read."""
         return None
 
+    def home_amsl(self):
+        """The home point's own height above sea level, or None if the
+        autopilot has not reported one."""
+        msg = self.link.m.messages.get("HOME_POSITION") if self.link.ready() else None
+        return None if msg is None else msg.altitude / 1000.0
+
     def set_home(self, lat, lon, alt_m):
-        """Record this point as home. alt_m None keeps the height home has."""
+        """Record this point as home. alt_m is metres above mean sea level,
+        the contract's frame for a global altitude, and None keeps the height
+        home already has."""
         raise Refused(NOT_SUPPORTED)
 
     def compass_calibration(self, start):

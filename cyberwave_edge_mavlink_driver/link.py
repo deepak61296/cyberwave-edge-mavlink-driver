@@ -24,6 +24,11 @@ STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 BODY_OFFSET_NED = mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
 BODY_NED = mavutil.mavlink.MAV_FRAME_BODY_NED
 
+# global frames: AMSL is what the contract means by an altitude, and zero in
+# the relative one is whatever height home already has
+GLOBAL_AMSL = mavutil.mavlink.MAV_FRAME_GLOBAL
+GLOBAL_RELATIVE_ALT = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+
 # HEARTBEAT types that are never the aircraft
 NON_VEHICLE_HEARTBEAT_TYPES = frozenset({
     mavutil.mavlink.MAV_TYPE_GCS,
@@ -328,7 +333,7 @@ class MavlinkLink:
             self.m.target_system, self.m.target_component, cmd, 0, *params)
 
     def send_command_int(self, cmd, *params, x=0, y=0, z=0.0,
-                         frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT):
+                         frame=GLOBAL_RELATIVE_ALT):
         """COMMAND_INT: four float params, then x and y in 1e7 degrees.
 
         A home point sent as a float32 lands half a metre from where it was

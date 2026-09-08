@@ -257,12 +257,15 @@ class PX4(Vehicle):
 
         param1 = 0 means "take the coordinates in this message". They go as
         COMMAND_INT because a COMMAND_LONG carries the latitude in a float32
-        and puts home a foot or two from where it was asked for. PX4 denies
-        a non-finite altitude, so with none given we send the aircraft's own
-        height above sea level.
+        and puts home a foot or two from where it was asked for. The altitude
+        is AMSL, as every global altitude in the contract is. PX4 denies a
+        non-finite one, so with none given we send the height home already
+        has, and the aircraft's own only if there is no home yet.
         """
         if not self.link.ready():
             raise Refused("not connected")
+        if alt_m is None:
+            alt_m = self.home_amsl()
         if alt_m is None:
             alt_m = self.amsl()
             if alt_m is None:

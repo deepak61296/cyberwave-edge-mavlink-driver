@@ -496,6 +496,31 @@ def test_ardupilot_set_home_without_an_altitude_keeps_the_one_home_has():
     link.m._on_send = accepting(link)
     ArduPilot(link).set_home(1.0, 2.0, None)
     assert link.m.sent[-1][13] == 0.0       # zero above home is home's height
+    assert link.m.sent[-1][3] == mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+
+
+def test_both_backends_read_a_home_altitude_as_amsl():
+    """7 m put home 7 m above the old home on one and 7 m above the sea on
+    the other. Home altitude is what RTL descends to."""
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).set_home(1.0, 2.0, 7.0)
+    assert link.m.sent[-1][3] == mavutil.mavlink.MAV_FRAME_GLOBAL
+    assert link.m.sent[-1][13] == 7.0
+
+    px4_link = gimbal_link()
+    PX4(px4_link).set_home(1.0, 2.0, 7.0)
+    assert px4_link.m.ints[-1][2] == mavutil.mavlink.MAV_FRAME_GLOBAL
+    assert px4_link.m.ints[-1][-1] == 7.0
+
+
+def test_px4_without_an_altitude_keeps_the_one_home_has():
+    """It sent the aircraft's own height, which moves home every time."""
+    link = gimbal_link()
+    link.m.messages["HOME_POSITION"] = types.SimpleNamespace(altitude=907090)
+    link.m.messages["GLOBAL_POSITION_INT"] = types.SimpleNamespace(alt=921000)
+    PX4(link).set_home(1.0, 2.0, None)
+    assert link.m.ints[-1][-1] == pytest.approx(907.09)
 
 
 def test_ardupilot_set_home_refusal_carries_the_fc_result():

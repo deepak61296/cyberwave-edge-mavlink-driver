@@ -6,6 +6,7 @@ import time
 from pymavlink import mavutil
 
 from .contract import NOT_SUPPORTED
+from .link import GLOBAL_AMSL, GLOBAL_RELATIVE_ALT
 from .vehicle import NAN, Refused, Vehicle, refusal
 
 logger = logging.getLogger(__name__)
@@ -180,11 +181,16 @@ class ArduPilot(Vehicle):
 
     def set_home(self, lat, lon, alt_m):
         # as COMMAND_INT, so the coordinates arrive whole; param1 0 means the
-        # point is the one in x, y and z rather than where the aircraft is
+        # point is the one in x, y and z rather than where the aircraft is.
+        # An altitude is AMSL, as every global altitude in the contract is;
+        # with none given, zero in the home-relative frame is the height home
+        # already has. RTL descends to this, so the frame is not a detail.
         ok, reason = self._acked_int(mavutil.mavlink.MAV_CMD_DO_SET_HOME, 0,
                                      x=int(round(lat * 1e7)),
                                      y=int(round(lon * 1e7)),
-                                     z=0.0 if alt_m is None else float(alt_m))
+                                     z=0.0 if alt_m is None else float(alt_m),
+                                     frame=(GLOBAL_RELATIVE_ALT if alt_m is None
+                                            else GLOBAL_AMSL))
         if not ok:
             raise Refused(reason)
 
