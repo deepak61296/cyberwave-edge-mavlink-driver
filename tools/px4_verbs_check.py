@@ -20,7 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cyberwave_edge_mavlink_driver.link import MavlinkLink        # noqa: E402
-from cyberwave_edge_mavlink_driver.px4 import PX4, VehicleError   # noqa: E402
+from cyberwave_edge_mavlink_driver.px4 import PX4   # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import Refused   # noqa: E402
 
 CONNECTION = "udpin:0.0.0.0:14540"
 
@@ -45,7 +46,7 @@ class Bench:
         try:
             answer = fn()
             got = "accepted" if answer is None else f"accepted {answer}"
-        except VehicleError as exc:
+        except Refused as exc:
             got = f"refused: {exc}"
         except Exception as exc:                      # noqa: BLE001
             got = f"raised {type(exc).__name__}: {exc}"
@@ -70,7 +71,7 @@ class Bench:
                 time.sleep(0.1)
             self.attitude("while held")
             self.v.gimbal_rate(0, 0)
-        except VehicleError as exc:
+        except Refused as exc:
             print(f"   refused: {exc}")
             return
         time.sleep(1.0)

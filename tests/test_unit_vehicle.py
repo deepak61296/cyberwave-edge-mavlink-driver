@@ -680,13 +680,13 @@ def test_px4_gimbal_point_ignores_a_slew_duration():
 def test_px4_gimbal_point_says_not_supported_when_nothing_answers(monkeypatch):
     monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
     link = gimbal_link({CONFIGURE: None})
-    with pytest.raises(px4.VehicleError, match="not supported on this vehicle"):
+    with pytest.raises(Refused, match="not supported on this vehicle"):
         PX4(link).gimbal_point(-30.0, 0.0, False)
 
 
 def test_px4_gimbal_point_passes_the_fc_verdict_on():
     link = gimbal_link({PITCHYAW: mavutil.mavlink.MAV_RESULT_DENIED})
-    with pytest.raises(px4.VehicleError, match="MAV_RESULT_DENIED"):
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
         PX4(link).gimbal_point(0.0, 0.0, False)
 
 
@@ -711,7 +711,7 @@ def test_px4_gimbal_rate_asks_for_control_once_when_there_is_no_gimbal(monkeypat
     link = gimbal_link({CONFIGURE: None})
     v = PX4(link)
     for _ in range(3):
-        with pytest.raises(px4.VehicleError, match="not supported on this vehicle"):
+        with pytest.raises(Refused, match="not supported on this vehicle"):
             v.gimbal_rate(-10.0, 0.0)
     assert link.m.commands() == [CONFIGURE]
     assert link.m.attitudes == []
@@ -765,13 +765,13 @@ def test_px4_set_home_uses_the_aircraft_height_when_none_is_given():
 
 
 def test_px4_set_home_with_no_altitude_and_no_fix_refuses():
-    with pytest.raises(px4.VehicleError, match="no position fix"):
+    with pytest.raises(Refused, match="no position fix"):
         PX4(gimbal_link()).set_home(47.0, 8.0, None)
 
 
 def test_px4_set_home_passes_the_refusal_on():
     link = gimbal_link({SET_HOME: mavutil.mavlink.MAV_RESULT_DENIED})
-    with pytest.raises(px4.VehicleError, match="MAV_RESULT_DENIED"):
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
         PX4(link).set_home(47.0, 8.0, 489.0)
 
 
@@ -785,7 +785,7 @@ def test_px4_compass_calibration_starts_the_magnetometer():
 def test_px4_compass_calibration_is_refused_with_the_motors_running():
     link = gimbal_link()
     link.state["armed"] = True
-    with pytest.raises(px4.VehicleError, match="motors running"):
+    with pytest.raises(Refused, match="motors running"):
         PX4(link).compass_calibration(True)
     assert link.m.sent == []
 
@@ -810,5 +810,5 @@ def test_px4_compass_cancel_goes_again_until_px4_takes_it():
 def test_px4_compass_cancel_gives_up_with_the_fc_verdict(monkeypatch):
     monkeypatch.setattr(px4, "CALIBRATION_TRIES", 2)
     link = gimbal_link({CALIBRATE: mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED})
-    with pytest.raises(px4.VehicleError, match="MAV_RESULT_TEMPORARILY_REJECTED"):
+    with pytest.raises(Refused, match="MAV_RESULT_TEMPORARILY_REJECTED"):
         PX4(link).compass_calibration(False)

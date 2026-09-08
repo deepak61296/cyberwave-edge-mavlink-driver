@@ -13,13 +13,7 @@ import time
 from pymavlink import mavutil
 
 from .link import BODY_NED
-from .vehicle import Vehicle, result_name
-
-try:
-    from .vehicle import VehicleError
-except ImportError:     # the shared verbs are landing on the other branch
-    class VehicleError(Exception):
-        """A refused verb, in the words the contract asks for."""
+from .vehicle import Refused, Vehicle, result_name
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +202,7 @@ class PX4(Vehicle):
             float(pitch_deg), float(yaw_deg), NAN, NAN,
             EARTH_FRAME if absolute else 0, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
         if not ok:
-            raise VehicleError(refusal(reason))
+            raise Refused(refusal(reason))
         logger.info("gimbal to pitch %.1f yaw %.1f (%s)", pitch_deg, yaw_deg,
                     "earth" if absolute else "body")
 
@@ -224,7 +218,7 @@ class PX4(Vehicle):
         if self._gimbal is None:
             self._take_gimbal()
         if not self._gimbal:
-            raise VehicleError(NO_GIMBAL)
+            raise Refused(NO_GIMBAL)
         self.link.m.mav.gimbal_manager_set_attitude_send(
             self.link.m.target_system, self.link.m.target_component,
             0, ALL_GIMBALS, [NAN] * 4, NAN,
@@ -260,11 +254,11 @@ class PX4(Vehicle):
         height above sea level.
         """
         if not self.link.ready():
-            raise VehicleError("not connected")
+            raise Refused("not connected")
         if alt_m is None:
             alt_m = self.amsl()
             if alt_m is None:
-                raise VehicleError("no position fix")
+                raise Refused("no position fix")
         cmd = mavutil.mavlink.MAV_CMD_DO_SET_HOME
         acks = self.link.state["acks"]
         acks.pop(cmd, None)
@@ -273,10 +267,10 @@ class PX4(Vehicle):
             mavutil.mavlink.MAV_FRAME_GLOBAL, cmd, 0, 0,
             0, 0, 0, NAN, int(round(lat * 1e7)), int(round(lon * 1e7)), float(alt_m))
         if not self._wait(lambda: cmd in acks, GIMBAL_ACK_S):
-            raise VehicleError(f"no COMMAND_ACK within {GIMBAL_ACK_S:.1f}s")
+            raise Refused(f"no COMMAND_ACK within {GIMBAL_ACK_S:.1f}s")
         result = acks.pop(cmd)
         if result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
-            raise VehicleError(result_name(result))
+            raise Refused(result_name(result))
         logger.info("home set to %.7f %.7f %.1f m", lat, lon, alt_m)
 
     def compass_calibration(self, start):
@@ -290,7 +284,7 @@ class PX4(Vehicle):
         cancelled", the same words that prove a start took.
         """
         if self.armed():
-            raise VehicleError("motors running")
+            raise Refused("motors running")
         cmd = mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION
         word = "started" if start else "cancelled"
         t0 = time.time()
@@ -304,7 +298,7 @@ class PX4(Vehicle):
             if ok or self._wait(said_so, CALIBRATION_S if start else 0.5):
                 logger.info("mag calibration %s", word)
                 return
-        raise VehicleError(refusal(reason))
+        raise Refused(refusal(reason))
 
     def amsl(self):
         """Altitude above mean sea level, from the pump's last fix."""
@@ -324,4 +318,4 @@ class PX4(Vehicle):
             0, 0, ALL_GIMBALS, timeout=GIMBAL_ACK_S)
         self._gimbal = ok
         if not ok:
-            raise VehicleError(refusal(reason))
+            raise Refused(refusal(reason))
