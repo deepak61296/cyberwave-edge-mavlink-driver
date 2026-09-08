@@ -31,7 +31,7 @@ from cyberwave.manifest.driver_config import (
 from . import contract
 from .link import MavlinkLink
 from .telemetry import Telemetry
-from .vehicle import pick_vehicle
+from .vehicle import NAN, Refused, pick_vehicle
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,13 @@ class MavlinkDriver(BaseDriver):
         self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
         self._sticks_live = False
         self._sticks_ready = threading.Event()          # the backend has the aircraft
+        # the camera's own stick, with a dead-man of its own so a gimbal move
+        # and a flight stick do not have to take turns
+        self._gimbal = None             # (pitch_dps, yaw_dps) or None
+        self._gimbal_at = 0.0
+        self._gimbal_window = contract.STICK_TIMEOUT_S
+        self._gimbal_live = False
+        self._no_gimbal = False         # this vehicle has none; say so once
         self._streams_at = 0.0
         self._link_up = True            # last state we raised an alert about
         self._pump = None
@@ -83,7 +90,7 @@ class MavlinkDriver(BaseDriver):
         for name in contract.DISCRETE:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_command),
                                protocol=sources, command=self._catalog_entry(name))
-        for name in contract.CONTINUOUS:
+        for name in contract.STICK_VERBS:
             iface.add_listener(COMMAND_TOPIC, CallbackGroup(self._on_stick), protocol=sources,
                                command=self._catalog_entry(name, continuous=True, rate_hz=10))
         t = self.telemetry
@@ -212,8 +219,32 @@ class MavlinkDriver(BaseDriver):
         except Exception:
             logger.warning("could not raise the link alert")
 
+    def _tick_gimbal(self, now):
+        """Keep the camera turning while its stick is fresh; stop it once
+        the bursts have stopped coming."""
+        rates = self._gimbal
+        if rates is not None and now - self._gimbal_at < self._gimbal_window:
+            self._gimbal_live = True
+            self._drive_gimbal(*rates)
+        elif self._gimbal_live:
+            self._gimbal_live = False
+            self._gimbal = None
+            self._drive_gimbal(0.0, 0.0)
+            logger.info("gimbal released")
+
+    def _drive_gimbal(self, pitch_dps, yaw_dps):
+        """One gimbal rate, from the tick, where nothing may raise."""
+        try:
+            self.vehicle.gimbal_rate(pitch_dps, yaw_dps)
+        except Refused as exc:
+            self._gimbal, self._gimbal_live = None, False
+            if not self._no_gimbal:
+                self._no_gimbal = True
+                logger.info("gimbal stick ignored: %s", exc)
+
     def _tick_sticks(self, now):
         """Stream a fresh stick; release once it has expired."""
+        self._tick_gimbal(now)
         stick = self._stick
         if stick is not None and (self._stick_at is None
                                   or now - self._stick_at < self._stick_window):
@@ -257,6 +288,9 @@ class MavlinkDriver(BaseDriver):
             return
         cmd = envelope["command"]
         data = envelope.get("data") or {}
+        if cmd in contract.GIMBAL_STICKS:
+            self._on_gimbal_stick(cmd, data)
+            return
         ux, uy, uz, ur = contract.CONTINUOUS[cmd]
         # magnitude rides in the payload, direction comes from the name
         rate = self._magnitude(data, cmd, bool(ur))
@@ -275,6 +309,20 @@ class MavlinkDriver(BaseDriver):
         # a plain stick is a dead-man and runs from the moment it lands; a
         # distance is time on the sticks, so the tick starts its clock instead
         self._stick_at = None if timed else time.time()
+
+    def _on_gimbal_stick(self, cmd, data):
+        """A camera stick: the verb names the direction, the payload the rate.
+
+        It moves no aircraft, so unlike a flight stick it is as good on the
+        ground as in the air.
+        """
+        rate = abs(float(data.get("rate", contract.DEFAULT_GIMBAL_RATE)))
+        window = self._window(cmd, data, rate)
+        if window is None:
+            return
+        self._gimbal_window, _ = window
+        self._gimbal = (contract.GIMBAL_STICKS[cmd][1] * rate, 0.0)
+        self._gimbal_at = time.time()
 
     @staticmethod
     def _magnitude(data, cmd, turning):
@@ -335,6 +383,10 @@ class MavlinkDriver(BaseDriver):
 
     def _release_sticks(self):
         self._stick = None
+        if self._gimbal_live:
+            self._gimbal_live = False
+            self._drive_gimbal(0.0, 0.0)
+        self._gimbal = None
         if self._sticks_live:
             self._sticks_live = False
             self.vehicle.release_sticks()
@@ -366,6 +418,9 @@ class MavlinkDriver(BaseDriver):
                 # a verb may add fields of its own, as takeoff adds altitude_m
                 ok, reason, *rest = self._execute(cmd, data)
                 extra = rest[0] if rest else None
+            except Refused as exc:
+                # the vehicle said no in the contract's words; pass them on
+                ok, reason = False, str(exc)
             except Exception as exc:
                 logger.exception("command %s failed", cmd)
                 ok, reason = False, f"{type(exc).__name__}: {exc}"
@@ -405,10 +460,48 @@ class MavlinkDriver(BaseDriver):
             return v.kill()
         if cmd == "set_home_here":
             return v.set_home_here()
-        if cmd == "reboot":
+        if cmd == "set_home_location":
+            return self._set_home(data)
+        if cmd in contract.REBOOT:
             return v.reboot()
+        if cmd == "gimbal_rotate":
+            return self._gimbal_rotate(data)
+        if cmd == "set_gimbal_pitch":
+            v.gimbal_point(float(data.get("pitch", 0.0)), NAN, True)
+            return True, ""
+        if cmd == "gimbal_rotate_speed":
+            # the SDK's units are 0.1 deg/s, the vehicle's are deg/s
+            v.gimbal_rate(_dps(data.get("pitch")), _dps(data.get("yaw")))
+            return True, ""
+        if cmd in ("start_compass_calibration", "stop_compass_calibration"):
+            start = cmd == "start_compass_calibration"
+            if start and v.armed():
+                return False, contract.MOTORS_RUNNING
+            v.compass_calibration(start)
+            return True, ""
         logger.warning("no handler for %s", cmd)
-        return False, "not supported on this vehicle"
+        return False, contract.NOT_SUPPORTED
+
+    def _gimbal_rotate(self, data):
+        """Point the camera. An axis the caller left out is not commanded,
+        and roll is in the payload but in no gimbal this driver steers."""
+        pitch, yaw = _angle(data.get("pitch")), _angle(data.get("yaw"))
+        if pitch != pitch and yaw != yaw:
+            return False, contract.NOT_SUPPORTED
+        absolute = str(data.get("mode", "absolute")).lower() != "relative"
+        self.vehicle.gimbal_point(pitch, yaw, absolute, _duration(data))
+        return True, ""
+
+    def _set_home(self, data):
+        lat, lon = data.get("latitude"), data.get("longitude")
+        if lat is None or lon is None:
+            return False, "latitude and longitude required"
+        lat, lon = float(lat), float(lon)
+        if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+            return False, "coordinates out of range"
+        altitude = data.get("altitude")
+        self.vehicle.set_home(lat, lon, None if altitude is None else float(altitude))
+        return True, ""
 
     def _reply(self, cmd, ok, reason, extra=None):
         """Answer on the command topic. status is the contract's field."""
@@ -425,3 +518,22 @@ class MavlinkDriver(BaseDriver):
 
     def driver_info_extra(self):
         return self.telemetry.summary()
+
+
+def _angle(value):
+    """One gimbal angle in degrees, NaN for an axis left out."""
+    return NAN if value is None else float(value)
+
+
+def _dps(value):
+    """One gimbal rate, from the SDK's 0.1 deg/s to deg/s."""
+    return NAN if value is None else float(value) / contract.SPEED_UNIT_PER_DPS
+
+
+def _duration(data):
+    """How long a gimbal move should take. duration is the field the SDK
+    documents; the other two turn up in hand-written payloads."""
+    for name in ("duration", "duration_sec", "time"):
+        if data.get(name) is not None:
+            return float(data[name])
+    return None

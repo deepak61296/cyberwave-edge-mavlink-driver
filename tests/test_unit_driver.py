@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cyberwave_edge_mavlink_driver import contract  # noqa: E402
 from cyberwave_edge_mavlink_driver.driver import MavlinkDriver  # noqa: E402
 from cyberwave_edge_mavlink_driver.telemetry import PROP_JOINTS, PropSpin  # noqa: E402
-from cyberwave_edge_mavlink_driver.vehicle import Vehicle  # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import NAN, Vehicle  # noqa: E402
 
 
 class FakeMQ:
@@ -43,6 +43,7 @@ class FakeVehicle(Vehicle):
         self.calls = []
         self.result = (True, "")
         self.is_returning = False
+        self.gimbal = None
 
     def mode_name(self):
         return "STABILIZE"
@@ -82,6 +83,21 @@ class FakeVehicle(Vehicle):
     def reboot(self):
         self.calls.append(("reboot",))
         return self.result
+
+    def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
+        self.calls.append(("point", pitch_deg, yaw_deg, absolute, duration_s))
+
+    def gimbal_rate(self, pitch_dps, yaw_dps):
+        self.calls.append(("rate", pitch_dps, yaw_dps))
+
+    def gimbal_attitude(self):
+        return self.gimbal
+
+    def set_home(self, lat, lon, alt_m):
+        self.calls.append(("set_home", lat, lon, alt_m))
+
+    def compass_calibration(self, start):
+        self.calls.append(("compass", start))
 
     def prepare_sticks(self):
         self.calls.append(("prepare",))
@@ -154,11 +170,29 @@ def test_arm_command_parsed_and_answered(driver):
     ("cancel_landing", {}, ("hold",)),
     ("set_home_here", {}, ("set_home_here",)),
     ("reboot", {}, ("reboot",)),
+    ("reboot_aircraft", {}, ("reboot",)),
+    ("set_home_location", {"latitude": 12.9716, "longitude": 77.5946},
+     ("set_home", 12.9716, 77.5946, None)),
+    ("set_home_location", {"latitude": 1.0, "longitude": 2.0, "altitude": 7.5},
+     ("set_home", 1.0, 2.0, 7.5)),
+    ("stop_compass_calibration", {}, ("compass", False)),
+    ("set_gimbal_pitch", {"pitch": -33.0}, ("point", -33.0, NAN, True, None)),
+    ("gimbal_rotate", {"pitch": -45.0}, ("point", -45.0, NAN, True, None)),
+    ("gimbal_rotate", {"pitch": 15.0, "mode": "relative"},
+     ("point", 15.0, NAN, False, None)),
+    ("gimbal_rotate", {"yaw": 20.0, "mode": "ABSOLUTE", "duration": 2.0},
+     ("point", NAN, 20.0, True, 2.0)),
+    ("gimbal_rotate_speed", {"pitch": 100.0}, ("rate", 10.0, NAN)),
+    ("gimbal_rotate_speed", {"pitch": -250.0, "yaw": 300.0}, ("rate", -25.0, 30.0)),
 ])
 def test_commands_reach_the_vehicle(driver, cmd, data, expected):
     driver.link.state["armed"] = True       # a parked aircraft refuses the hold verbs
     send(driver, {"source_type": "tele", "command": cmd, "data": data})
-    assert driver.vehicle.calls[-1] == expected
+    got = driver.vehicle.calls[-1]
+    assert len(got) == len(expected)
+    # NaN is the axis nobody commanded, and it is never equal to itself
+    assert all(b != b if isinstance(b, float) and b != b else a == b
+               for a, b in zip(got, expected))
 
 
 @pytest.mark.parametrize("cmd", contract.NEEDS_AIR)
@@ -382,6 +416,153 @@ def test_stop_releases_the_sticks_and_replies_leaving_the_base_alone(driver):
     assert driver.vehicle.calls == [("release",)]
     assert driver._stick is None
     assert driver._operation_mode is DriverOperationMode.TELEOP_REMOTE
+
+
+# --- the camera, home and the compass ------------------------------------
+
+def test_compass_calibration_is_refused_with_the_motors_running(driver):
+    driver.link.state["armed"] = True
+    reply = send(driver, {"source_type": "tele",
+                          "command": "start_compass_calibration", "data": {}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "motors running"
+    assert driver.vehicle.calls == []
+
+
+def test_stopping_a_calibration_is_never_refused(driver):
+    """Only the start is; aborting one has to work whatever the aircraft does."""
+    driver.link.state["armed"] = True
+    reply = send(driver, {"source_type": "tele",
+                          "command": "stop_compass_calibration", "data": {}})
+    assert reply["status"] == "ok"
+    assert driver.vehicle.calls == [("compass", False)]
+
+
+@pytest.mark.parametrize("data, reason", [
+    ({}, "latitude and longitude required"),
+    ({"latitude": 12.0}, "latitude and longitude required"),
+    ({"latitude": 12.0, "longitude": 400.0}, "coordinates out of range"),
+    ({"latitude": -95.0, "longitude": 10.0}, "coordinates out of range"),
+])
+def test_a_home_point_that_is_not_one_is_refused(driver, data, reason):
+    reply = send(driver, {"source_type": "tele",
+                          "command": "set_home_location", "data": data})
+    assert reply["status"] == "error"
+    assert reply["reason"] == reason
+    assert driver.vehicle.calls == []
+
+
+def test_a_gimbal_move_with_no_steerable_axis_is_refused(driver):
+    """roll is in the payload the SDK sends and in no gimbal we steer."""
+    reply = send(driver, {"source_type": "tele", "command": "gimbal_rotate",
+                          "data": {"roll": 10.0}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "not supported on this vehicle"
+    assert driver.vehicle.calls == []
+
+
+def test_a_vehicle_that_refuses_answers_in_the_contracts_words(driver):
+    """The base Vehicle has no gimbal, and its phrase reaches the reply whole."""
+    driver.vehicle.gimbal_point = Vehicle.gimbal_point.__get__(driver.vehicle)
+    reply = send(driver, {"source_type": "tele", "command": "set_gimbal_pitch",
+                          "data": {"pitch": 0.0}})
+    assert reply["status"] == "error"
+    assert reply["reason"] == "not supported on this vehicle"
+
+
+def test_reboot_aircraft_is_reboot(driver):
+    """Two names in the catalog, one thing that happens."""
+    for cmd in ("reboot", "reboot_aircraft"):
+        reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+        assert reply["status"] == "ok"
+        assert reply["command"] == cmd
+    assert driver.vehicle.calls == [("reboot",), ("reboot",)]
+
+
+@pytest.mark.parametrize("cmd", ("gimbal_rotate", "set_gimbal_pitch",
+                                 "gimbal_rotate_speed", "set_home_location",
+                                 "start_compass_calibration",
+                                 "stop_compass_calibration", "reboot_aircraft"))
+def test_the_new_verbs_work_parked(driver, cmd):
+    """None of them needs air, and the catalog would be a lie if they did."""
+    assert cmd not in contract.NEEDS_AIR
+
+
+# --- the camera sticks ---------------------------------------------------
+
+def test_a_gimbal_stick_takes_its_direction_from_the_verb(driver):
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_down",
+                      "data": {"rate": 20.0}})
+    assert driver._gimbal == (-20.0, 0.0)
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_up",
+                      "data": {}})
+    assert driver._gimbal == (contract.DEFAULT_GIMBAL_RATE, 0.0)
+
+
+def test_a_gimbal_stick_is_streamed_and_zeroed_when_it_expires(driver):
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_up",
+                      "data": {"rate": 30.0}})
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert driver.vehicle.calls.count(("rate", 30.0, 0.0)) == 2
+    driver._gimbal_at -= contract.STICK_TIMEOUT_S
+    asyncio.run(driver.on_tick())
+    assert driver._gimbal is None
+    assert driver.vehicle.calls[-1] == ("rate", 0.0, 0.0)
+    asyncio.run(driver.on_tick())
+    assert driver.vehicle.calls.count(("rate", 0.0, 0.0)) == 1   # only the once
+
+
+def test_a_gimbal_stick_moves_the_camera_on_the_ground(driver):
+    """It turns no rotor, so unlike a flight stick it is fine parked."""
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_down",
+                      "data": {"rate": 30.0, "distance": 45.0}})
+    assert driver._gimbal == (-30.0, 0.0)
+    assert driver._gimbal_window == pytest.approx(1.5)   # 45 degrees at 30 deg/s
+    assert driver.client.mqtt.replies == []
+
+
+def test_a_gimbal_angle_too_far_to_travel_is_refused(driver):
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_up",
+                      "data": {"rate": 1.0, "distance": 900.0}})
+    assert driver._gimbal is None
+    assert driver.client.mqtt.replies[-1]["status"] == "error"
+
+
+def test_a_gimbal_stick_and_a_flight_stick_are_live_together(driver):
+    driver._on_stick({"source_type": "tele", "command": "move_forward",
+                      "data": {"linear_x": 1.0}})
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_down",
+                      "data": {}})
+    asyncio.run(driver.on_tick())
+    assert ("velocity", (1.0, 0, 0, 0)) in driver.vehicle.calls
+    assert ("rate", -contract.DEFAULT_GIMBAL_RATE, 0.0) in driver.vehicle.calls
+
+
+def test_a_discrete_verb_stops_the_camera_first(driver):
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_up",
+                      "data": {}})
+    asyncio.run(driver.on_tick())
+    send(driver, {"source_type": "tele", "command": "arm", "data": {}})
+    assert ("rate", 0.0, 0.0) in driver.vehicle.calls
+    assert driver._gimbal is None
+
+
+def test_a_gimbal_stick_on_a_vehicle_without_one_is_dropped_quietly(driver):
+    """A stick never answers, and the tick may not blow up over one either."""
+    driver.vehicle.gimbal_rate = Vehicle.gimbal_rate.__get__(driver.vehicle)
+    driver._on_stick({"source_type": "tele", "command": "gimbal_pitch_up",
+                      "data": {}})
+    asyncio.run(driver.on_tick())
+    asyncio.run(driver.on_tick())
+    assert driver._gimbal is None
+    assert driver.client.mqtt.replies == []
+
+
+def test_sim_tele_gimbal_stick_is_dropped(driver):
+    driver._on_stick({"source_type": "sim_tele", "command": "gimbal_pitch_up",
+                      "data": {}})
+    assert driver._gimbal is None
 
 
 # --- sticks -------------------------------------------------------------
@@ -656,6 +837,22 @@ def test_vehicle_state_payload_shape(driver):
     assert driver.telemetry.vehicle_state()["armed"] is True      # changed, goes out now
 
 
+def test_vehicle_state_carries_the_camera_angle_when_there_is_one(driver):
+    assert "gimbal_pitch" not in driver.telemetry.vehicle_state()
+    driver.vehicle.gimbal = (-45.25, 3.0)
+    payload = driver.telemetry.vehicle_state()
+    assert payload["gimbal_pitch"] == -45.25
+    assert payload["gimbal_yaw"] == 3.0
+
+
+def test_a_moving_camera_publishes_without_waiting_for_the_second(driver):
+    driver.vehicle.gimbal = (-45.0, 0.0)
+    assert driver.telemetry.vehicle_state()["gimbal_pitch"] == -45.0
+    assert driver.telemetry.vehicle_state() is None      # unchanged, too soon
+    driver.vehicle.gimbal = (-30.0, 0.0)
+    assert driver.telemetry.vehicle_state()["gimbal_pitch"] == -30.0
+
+
 def test_position_and_rotation_payloads(driver):
     assert driver.telemetry.position() is None
     driver.link.state["ned"] = (1.0, 2.0, -3.0)
@@ -724,9 +921,12 @@ def test_manifest_lists_every_verb_offline():
     manifest = MavlinkDriver.get_manifest(compiled=False)
     supported = manifest["mqtt"]["commands"]["supported"]
     names = [c["name"] if isinstance(c, dict) else c for c in supported]
-    for verb in ("arm", "disarm", "brake", "hover", "kill", "takeoff", "stop"):
+    for verb in ("arm", "disarm", "brake", "hover", "kill", "takeoff", "stop",
+                 "reboot_aircraft", "set_home_location", "gimbal_rotate",
+                 "set_gimbal_pitch", "gimbal_rotate_speed",
+                 "start_compass_calibration", "stop_compass_calibration"):
         assert verb in names
-    for verb in contract.CONTINUOUS:
+    for verb in contract.STICK_VERBS:
         entry = supported[names.index(verb)]
         assert entry["continuous"] is True
     assert set(manifest["mqtt"]["twin"]) == {"command", "telemetry", "position", "rotation"}
@@ -743,7 +943,14 @@ def test_manifest_says_what_the_verbs_take():
         {"name": "distance", "default": None, "unit": "m"}]
     assert entries["kill"]["args"] == [{"name": "force", "default": False, "unit": None}]
     assert entries["turn_left"]["args"][0]["unit"] == "rad/s"
-    for verb in list(contract.DISCRETE) + list(contract.CONTINUOUS):
+    assert entries["gimbal_rotate_speed"]["args"][0] == {
+        "name": "pitch", "default": None, "unit": "0.1 deg/s"}
+    assert entries["gimbal_pitch_up"]["args"] == [
+        {"name": "rate", "default": contract.DEFAULT_GIMBAL_RATE, "unit": "deg/s"},
+        {"name": "distance", "default": None, "unit": "deg"}]
+    assert [a["name"] for a in entries["set_home_location"]["args"]] == \
+        ["latitude", "longitude", "altitude"]
+    for verb in list(contract.DISCRETE) + list(contract.STICK_VERBS):
         assert entries[verb]["description"]
 
 

@@ -32,12 +32,17 @@ NON_VEHICLE_HEARTBEAT_TYPES = frozenset({
     mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
 })
 
+# GIMBAL_DEVICE_ATTITUDE_STATUS is MAVLink 2 only, and the dialect pymavlink
+# picks before any connection exists has no name for it.
+GIMBAL_ATTITUDE_MSG_ID = 285
+
 # the messages we read, requested at 10 Hz
 STREAMED = (
     mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE,
     mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED,
     mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
     mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW,
+    GIMBAL_ATTITUDE_MSG_ID,
 )
 
 LANDED_STATES = {
@@ -85,6 +90,14 @@ def enu_quaternion_from_ned_euler(roll, pitch, yaw):
     }
 
 
+def pitch_yaw_from_quaternion(q):
+    """GIMBAL_DEVICE_ATTITUDE_STATUS.q (w, x, y, z) -> pitch, yaw in degrees."""
+    w, x, y, z = q
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    return math.degrees(pitch), math.degrees(yaw)
+
+
 class MavlinkLink:
     """Connection plus the freshest state the autopilot has reported."""
 
@@ -97,6 +110,7 @@ class MavlinkLink:
             "armed": False, "mode": None, "alt": 0.0, "ned": None,
             "attitude": None, "last_attitude": 0.0, "landed": None,
             "servo_pwm": None, "acks": {}, "last_heartbeat": 0.0,
+            "gimbal": None,     # (pitch, yaw) in degrees, kept like attitude
         }
         # recent STATUSTEXT, so a verb can report why the autopilot refused
         self._texts = collections.deque(maxlen=64)
@@ -230,6 +244,11 @@ class MavlinkLink:
         elif k == "ATTITUDE":
             s["attitude"] = (msg.roll, msg.pitch, msg.yaw)
             s["last_attitude"] = now
+        elif k == "GIMBAL_DEVICE_ATTITUDE_STATUS":
+            s["gimbal"] = pitch_yaw_from_quaternion(msg.q)
+        elif k == "MOUNT_STATUS":
+            # what a mount too old for the v2 protocol reports, in centidegrees
+            s["gimbal"] = (msg.pointing_a / 100.0, msg.pointing_c / 100.0)
         elif k == "SERVO_OUTPUT_RAW":
             s["servo_pwm"] = (msg.servo1_raw, msg.servo2_raw,
                               msg.servo3_raw, msg.servo4_raw)
@@ -299,6 +318,21 @@ class MavlinkLink:
         self.state["acks"].pop(cmd, None)
         self.m.mav.command_long_send(
             self.m.target_system, self.m.target_component, cmd, 0, *params)
+
+    def send_command_int(self, cmd, *params, x=0, y=0, z=0.0,
+                         frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT):
+        """COMMAND_INT: four float params, then x and y in 1e7 degrees.
+
+        A home point sent as a float32 lands half a metre from where it was
+        asked for; as an int32 it lands on it.
+        """
+        if not self.ready():
+            return
+        params = list(params) + [0.0] * (4 - len(params))
+        self.state["acks"].pop(cmd, None)
+        self.m.mav.command_int_send(
+            self.m.target_system, self.m.target_component, frame, cmd, 0, 0,
+            *params, x, y, z)
 
     def wait_ack(self, cmd, timeout=5.0):
         """COMMAND_ACK result for cmd, or None if it never came."""
