@@ -37,12 +37,18 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 | discrete | `brake`, `hover`, `emergency_stop`, `cancel_takeoff`, `cancel_landing`, `cancel_return_to_home` | BRAKE (no-op on the ground) | `AUTO.LOITER` |
 | discrete | `stop` (registered by the SDK base) | zero the sticks | zero the sticks, then Hold |
 | discrete | `kill` | force disarm, refused in the air without `force` | same |
-| discrete | `set_home_here`, `reboot` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused with the motors running) | same |
+| discrete | `set_home_here`, `reboot`, `reboot_aircraft` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused with the motors running); the two reboot names are one verb | same |
+| discrete | `set_home_location` | `DO_SET_HOME` as a `COMMAND_INT`, so the coordinates arrive whole | not yet |
+| discrete | `gimbal_rotate`, `set_gimbal_pitch`, `gimbal_rotate_speed` | `DO_GIMBAL_MANAGER_PITCHYAW`, gimbal protocol v2 | not yet |
+| discrete | `start_compass_calibration`, `stop_compass_calibration` | `DO_START_MAG_CAL`, `DO_CANCEL_MAG_CAL`; the start is refused with the motors running | not yet |
 | discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit; `disarm` is refused in the air without `force` | same; force arm is not possible over MAVLink |
 | continuous | `move_forward/backward`, `strafe_left/right`, `turn_left/right`, `ascend`, `descend` | body-frame velocity / yaw-rate setpoints at 10 Hz, in GUIDED | same, in OFFBOARD |
+| continuous | `gimbal_pitch_up`, `gimbal_pitch_down` | gimbal pitch rate at 10 Hz, 30 deg/s unless the payload says otherwise | not yet |
 
 Every discrete command returns `(ok, reason)` from the autopilot backend, so
-a refusal comes back with the flight controller's own words.
+a refusal comes back with the flight controller's own words. "not yet" above
+means the backend has no handler and the verb answers `not supported on this
+vehicle`, which is the contract's phrase for exactly that.
 
 ### `arm` / `disarm` (vendor-neutral extension)
 
@@ -66,6 +72,34 @@ Both wait up to 5 s for the vehicle's `MAV_MODE_FLAG_SAFETY_ARMED` bit to
 match and collect `STATUSTEXT` meanwhile, so a refusal comes back in the
 flight controller's own words.
 
+### The camera
+
+`gimbal_rotate` carries `pitch`, `yaw` and `roll` in degrees, a `mode` of
+`absolute` or `relative`, and an optional `duration`. An axis the caller
+leaves out is an axis nobody commanded; `roll` is in the payload the SDK
+sends and in no gimbal this driver steers, so a request for roll alone is
+refused. `gimbal_rotate_speed` is in the SDK's own units, **0.1 deg/s**, and
+the driver converts before the vehicle sees it. A `duration` has no
+counterpart in the gimbal protocol, so ArduPilot drives the rate that covers
+the gap and then lands on the angle.
+
+ArduPilot takes the pitch/yaw pair or nothing: a command with one half NaN is
+refused, so the half the caller left out is filled with the angle the gimbal
+already holds. The angle comes back on `GIMBAL_DEVICE_ATTITUDE_STATUS`, or
+`MOUNT_STATUS` from a mount too old for the v2 protocol, and goes out in
+`vehicle_state` as `gimbal_pitch` and `gimbal_yaw`.
+
+SITL has no gimbal unless it is given one. A servo mount is enough:
+
+```
+MNT1_TYPE 1        SERVO9_FUNCTION 7     MNT1_PITCH_MIN -90
+MNT1_YAW_MIN -180  SERVO10_FUNCTION 8    MNT1_PITCH_MAX 30
+MNT1_YAW_MAX 180
+```
+
+Pass them in an extra defaults file (`--defaults copter.parm,gimbal.parm`) so
+the mount is there from boot.
+
 ### Status replies
 
 Every discrete command answers on the same command topic (contract
@@ -85,7 +119,9 @@ direction "both"). `status` is unchanged; the rest is additive:
 - `cyberwave/joint/<uuid>/update`: prop spin from real motor PWM, 10 Hz
 - `cyberwave/twin/<uuid>/telemetry`: `{"type": "vehicle_state", "armed":
   bool, "mode": str, "flight_state": str, "motors_pwm": [...]}`, on every
-  change and at least once a second
+  change and at least once a second. An aircraft with a gimbal adds
+  `gimbal_pitch` and `gimbal_yaw` in degrees, and a change in either
+  publishes the record
 - twin alerts: one `mavlink_link` alert at severity `error` when the
   autopilot stops sending heartbeats, one at `info` when it is back. Only
   the two transitions, and the REST call runs off the tick loop
@@ -183,7 +219,7 @@ snippet above.
 - [ ] PX4 SITL pass
 - [x] Arm / disarm from the SDK, with the FC's refusal reason returned
 - [ ] Battery/status telemetry topics
-- [ ] Gimbal commands (contract supports; needs a gimbal target)
+- [x] Gimbal commands on ArduPilot, proven against a SITL servo mount
 - [ ] Real flight controller (bench, props off, then flight, hard safety gates)
 
 Scaffolded with [cyberwave-os/driver-skill](https://github.com/cyberwave-os/driver-skill).
