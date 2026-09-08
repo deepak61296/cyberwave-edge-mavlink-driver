@@ -58,7 +58,13 @@ class MavlinkDriver(BaseDriver):
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
         # one thing at a time changes the aircraft's mode: a verb or the sticks
         self._lock = threading.Lock()
+        # held for a moment around the two sticks and _running, never across
+        # anything that talks to the aircraft: it closes the window where a
+        # stick checked _running before a verb set it and stored after the
+        # verb had already let the sticks go
+        self._stick_lock = threading.Lock()
         self._running = None            # the discrete verb that has the aircraft
+        self._dropped = False           # a stick was refused while it runs
         self._stick = None              # (vx, vy, vz, yaw_rate) or None
         self._stick_at = 0.0            # when its window started, None until it does
         self._stick_window = contract.STICK_TIMEOUT_S   # how long it stays live
@@ -309,10 +315,7 @@ class MavlinkDriver(BaseDriver):
         if not self._accepts(envelope):
             return
         if self._running:
-            # a burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it
-            if not self._dropped:
-                self._dropped = True
-                logger.info("sticks dropped while %s runs", self._running)
+            self._drop_stick()
             return
         cmd = envelope["command"]
         data = envelope.get("data") or {}
@@ -332,11 +335,21 @@ class MavlinkDriver(BaseDriver):
             # ground the sticks move nothing: say so rather than time out silent
             self._reply(cmd, False, "not in air")
             return
-        self._stick_window = seconds
-        self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
-        # a plain stick is a dead-man and runs from the moment it lands; a
-        # distance is time on the sticks, so the tick starts its clock instead
-        self._stick_at = None if timed else time.time()
+        with self._stick_lock:
+            if self._running:   # a verb took the aircraft while we read this one
+                self._drop_stick()
+                return
+            self._stick_window = seconds
+            self._stick = (ux * rate, uy * rate, uz * rate, ur * rate)
+            # a plain stick is a dead-man and runs from the moment it lands; a
+            # distance is time on the sticks, so the tick starts its clock instead
+            self._stick_at = None if timed else time.time()
+
+    def _drop_stick(self):
+        """A burst arriving mid-verb would re-engage GUIDED or OFFBOARD under it."""
+        if not self._dropped:
+            self._dropped = True
+            logger.info("sticks dropped while %s runs", self._running)
 
     def _on_gimbal_stick(self, cmd, data):
         """A camera stick: the verb names the direction, the payload the rate.
@@ -348,9 +361,13 @@ class MavlinkDriver(BaseDriver):
         window = self._window(cmd, data, rate)
         if window is None:
             return
-        self._gimbal_window, _ = window
-        self._gimbal = (contract.GIMBAL_STICKS[cmd][1] * rate, 0.0)
-        self._gimbal_at = time.time()
+        with self._stick_lock:
+            if self._running:
+                self._drop_stick()
+                return
+            self._gimbal_window, _ = window
+            self._gimbal = (contract.GIMBAL_STICKS[cmd][1] * rate, 0.0)
+            self._gimbal_at = time.time()
 
     @staticmethod
     def _magnitude(data, cmd, turning):
@@ -410,13 +427,15 @@ class MavlinkDriver(BaseDriver):
         threading.Thread(target=run, name="sticks", daemon=True).start()
 
     def _release_sticks(self):
-        self._stick = None
-        if self._gimbal_live:
-            self._gimbal_live = False
+        # the sticks go under the lock, the aircraft never: a stick that lands
+        # between here and the end of the verb finds _running set and is dropped
+        with self._stick_lock:
+            self._stick = self._gimbal = None
+            gimbal_live, self._gimbal_live = self._gimbal_live, False
+            sticks_live, self._sticks_live = self._sticks_live, False
+        if gimbal_live:
             self._drive_gimbal(0.0, 0.0)
-        self._gimbal = None
-        if self._sticks_live:
-            self._sticks_live = False
+        if sticks_live:
             self.vehicle.release_sticks()
             logger.info("sticks released")
 
@@ -436,7 +455,8 @@ class MavlinkDriver(BaseDriver):
             if cmd != "stop" and not (self.link.ready() and self.link.connected()):
                 self._reply(cmd, False, "not connected")
                 return
-            self._running, self._dropped = cmd, False
+            with self._stick_lock:
+                self._running, self._dropped = cmd, False
             extra = None
             try:
                 # the contract: a discrete command shuts stick input down first
@@ -451,7 +471,8 @@ class MavlinkDriver(BaseDriver):
                 logger.exception("command %s failed", cmd)
                 ok, reason = False, f"{type(exc).__name__}: {exc}"
             finally:
-                self._running = None
+                with self._stick_lock:
+                    self._running = None
             if not ok and self.vehicle.abort.is_set():
                 reason = "superseded"
             self._reply(cmd, ok, reason, extra)

@@ -356,6 +356,42 @@ def test_discrete_command_releases_the_sticks_first(driver):
     assert driver.vehicle.calls[0] == ("release",)
 
 
+def test_a_stick_that_lands_mid_verb_does_not_survive_it(driver):
+    """Its check ran before the verb took the aircraft and its store lands
+    after the verb let the sticks go: it must not sit there and then stream."""
+    driver.link.state["armed"], driver.link.state["alt"] = True, 3.0
+    v, reading, released, finish = (driver.vehicle, threading.Event(),
+                                    threading.Event(), threading.Event())
+    window = driver._window
+
+    def slow_window(cmd, data, rate):
+        reading.set()               # past the _running check, not yet stored
+        released.wait(5.0)
+        return window(cmd, data, rate)
+    driver._window = slow_window
+
+    def hold():
+        released.set()              # the sticks are already released here
+        finish.wait(5.0)
+        return True, ""
+    v.hold = hold
+
+    stick = threading.Thread(target=driver._on_stick, args=(
+        {"source_type": "tele", "command": "move_forward", "data": {}},))
+    stick.start()
+    assert reading.wait(5.0)
+    verb = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "brake", "data": {}}))
+    verb.start()
+    stick.join(5.0)
+    finish.set()
+    verb.join(5.0)
+    assert driver._stick is None
+    v.calls.clear()
+    driver._tick_sticks(time.time())
+    assert v.calls == []            # and nothing of it reaches the aircraft
+
+
 @pytest.mark.parametrize("urgent", contract.URGENT)
 def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     """A kill must not queue behind a takeoff that waits half a minute."""
