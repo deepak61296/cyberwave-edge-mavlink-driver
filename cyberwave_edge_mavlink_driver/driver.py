@@ -30,7 +30,7 @@ from cyberwave.manifest.driver_config import (
 
 from . import contract
 from .link import MavlinkLink
-from .telemetry import Telemetry
+from .telemetry import PROP_JOINTS, Telemetry, prop_joint_names
 from .vehicle import NAN, Refused, pick_vehicle
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,29 @@ class MavlinkDriver(BaseDriver):
     # -- lifecycle -------------------------------------------------------
 
     async def on_configure(self):
-        pass
+        # the twin is bound by now, so this is where its joints are readable
+        self.telemetry.use_prop_joints(self._prop_joints())
+        logger.info("prop joints: %s", ", ".join(self.telemetry.props.joints))
+
+    def _prop_joints(self):
+        """The prop joint names this twin's asset actually uses.
+
+        px4vision calls them prop_1_joint..prop_4_joint, the DJI assets
+        prop_front_left_joint and so on, so ask the twin instead of
+        guessing. CYBERWAVE_PROP_JOINTS names them by hand, for a twin
+        that keeps its joints to itself.
+        """
+        override = os.environ.get("CYBERWAVE_PROP_JOINTS", "").strip()
+        if override:
+            return [n.strip() for n in override.split(",") if n.strip()]
+        try:
+            names = prop_joint_names(self.twin.get_controllable_joint_names())
+        except Exception:
+            names = ()
+        if names:
+            return names
+        logger.info("no prop joints from the twin; using the px4vision names")
+        return PROP_JOINTS
 
     async def on_connect_to_device(self):
         await asyncio.to_thread(self.link.connect)

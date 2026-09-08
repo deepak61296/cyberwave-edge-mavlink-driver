@@ -7,23 +7,34 @@ from . import contract
 
 STATE_PERIOD_S = 1.0    # vehicle_state goes out at least this often
 
-# Prop-joint animation (twin assets with prop_N_joint continuous joints).
+# Prop-joint animation (twin assets with continuous prop joints).
 # The viewer renders joint POSITIONS only, so we integrate a PWM-scaled
 # visual spin rate into wrapped angles: legible spin, not true prop RPM.
+# These are the px4vision names, the fallback for a twin that lists none;
+# the driver asks the twin for its own at start.
 PROP_JOINTS = ("prop_1_joint", "prop_2_joint", "prop_3_joint", "prop_4_joint")
-# Directions match the asset's URDF (prop_1/2 carry the CCW mesh, prop_3/4
-# the CW mesh), which is also ArduPilot's quad-X motor order: M1 front-right
-# CCW, M2 rear-left CCW, M3 front-left CW, M4 rear-right CW. CCW viewed
-# from above = positive rotation about +Z.
+# Direction goes by position in the list, which for the px4vision asset is
+# its URDF order (prop_1/2 carry the CCW mesh, prop_3/4 the CW mesh) and
+# also ArduPilot's quad-X motor order: M1 front-right CCW, M2 rear-left
+# CCW, M3 front-left CW, M4 rear-right CW. CCW from above = positive +Z.
 PROP_DIRS = (1, 1, -1, -1)
 PROP_VISUAL_MAX_RAD_S = 60.0  # idle (1100 us) = 6 rad/s: ~35 deg per 10 Hz update, no wagon-wheel reversal
 
 
-class PropSpin:
-    """Four prop angles, advanced from the latest SERVO_OUTPUT_RAW."""
+def prop_joint_names(names):
+    """The prop joints among a twin's joint names, sorted so the spin
+    directions land the same way on every start."""
+    return tuple(sorted(n for n in names if "prop" in n.lower()))
 
-    def __init__(self):
-        self.angles = [0.0] * 4
+
+class PropSpin:
+    """Prop angles, advanced from the latest SERVO_OUTPUT_RAW."""
+
+    def __init__(self, joints=PROP_JOINTS):
+        # position picks the direction and the PWM channel, and there are
+        # four of each, so a longer list loses its tail
+        self.joints = tuple(joints)[:len(PROP_DIRS)]
+        self.angles = [0.0] * len(self.joints)
         self.at = time.time()
 
     def payload(self, pwm):
@@ -34,7 +45,7 @@ class PropSpin:
         dt = min(now - self.at, 0.5)
         self.at = now
         positions, velocities = {}, {}
-        for i, name in enumerate(PROP_JOINTS):
+        for i, name in enumerate(self.joints):
             omega = 0.0
             # sanity-bounded: unused channels report 0, and a raw 65535
             # (UINT16 "unknown") must not read as a full-speed prop
@@ -87,6 +98,10 @@ class Telemetry:
             return None
         return {"type": "rotation", "rotation": quat,
                 "source_type": "edge", "timestamp": time.time()}
+
+    def use_prop_joints(self, names):
+        """Spin the joints the twin's own asset has, not the px4vision ones."""
+        self.props = PropSpin(names)
 
     def prop_joints(self):
         return self.props.payload(self.link.state["servo_pwm"])
