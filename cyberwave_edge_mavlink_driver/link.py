@@ -235,6 +235,19 @@ class MavlinkLink:
             s["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             s["mode"] = msg.custom_mode
             s["last_heartbeat"] = now
+        elif msg.get_srcSystem() != self.m.target_system:
+            # a second aircraft or a companion behind a router: its position,
+            # its landed state and its acks are not this vehicle's
+            return k
+        elif k == "GIMBAL_DEVICE_ATTITUDE_STATUS":
+            # the mount answers as a component of its own, so only the system
+            # is checked for the two it sends
+            s["gimbal"] = pitch_yaw_from_quaternion(msg.q)
+        elif k == "MOUNT_STATUS":
+            # what a mount too old for the v2 protocol reports, in centidegrees
+            s["gimbal"] = (msg.pointing_a / 100.0, msg.pointing_c / 100.0)
+        elif msg.get_srcComponent() != self.m.target_component:
+            return k    # everything below is the autopilot's own report
         elif k == "COMMAND_ACK":
             s["acks"][msg.command] = msg.result
         elif k == "GLOBAL_POSITION_INT":
@@ -244,11 +257,6 @@ class MavlinkLink:
         elif k == "ATTITUDE":
             s["attitude"] = (msg.roll, msg.pitch, msg.yaw)
             s["last_attitude"] = now
-        elif k == "GIMBAL_DEVICE_ATTITUDE_STATUS":
-            s["gimbal"] = pitch_yaw_from_quaternion(msg.q)
-        elif k == "MOUNT_STATUS":
-            # what a mount too old for the v2 protocol reports, in centidegrees
-            s["gimbal"] = (msg.pointing_a / 100.0, msg.pointing_c / 100.0)
         elif k == "SERVO_OUTPUT_RAW":
             s["servo_pwm"] = (msg.servo1_raw, msg.servo2_raw,
                               msg.servo3_raw, msg.servo4_raw)

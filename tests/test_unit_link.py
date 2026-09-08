@@ -45,14 +45,21 @@ class FakeHeartbeat:
 
 
 class FakeMessage:
-    """Any other message: a type name plus fields."""
+    """Any other message: a type name, who sent it, and its fields."""
 
-    def __init__(self, type, **fields):
+    def __init__(self, type, sysid=1, compid=1, **fields):
         self._type = type
+        self._sysid, self._compid = sysid, compid
         self.__dict__.update(fields)
 
     def get_type(self):
         return self._type
+
+    def get_srcSystem(self):
+        return self._sysid
+
+    def get_srcComponent(self):
+        return self._compid
 
 
 class FakeMav:
@@ -207,6 +214,42 @@ def test_an_older_mount_reports_centidegrees():
                                           pointing_b=0, pointing_c=1500)]))
     link.pump_once()
     assert link.state["gimbal"] == (-30.0, 15.0)
+
+
+@pytest.mark.parametrize("sysid, compid", [
+    (42, 1),        # a second aircraft behind the router
+    (1, 191),       # a companion node on the aircraft's own system
+])
+def test_only_the_accepted_vehicle_is_folded_in(sysid, compid):
+    """in_air() and the acks must follow one aircraft, not whoever talks."""
+    messages = [
+        FakeMessage("GLOBAL_POSITION_INT", sysid, compid, relative_alt=12000),
+        FakeMessage("EXTENDED_SYS_STATE", sysid, compid,
+                    landed_state=mavutil.mavlink.MAV_LANDED_STATE_IN_AIR),
+        FakeMessage("COMMAND_ACK", sysid, compid, command=400, result=0),
+        FakeMessage("LOCAL_POSITION_NED", sysid, compid, x=1.0, y=2.0, z=-3.0),
+    ]
+    link = link_with(FakeMav(messages))
+    for _ in messages:
+        link.pump_once()
+    assert link.state["alt"] == 0.0
+    assert link.state["landed"] is None
+    assert link.state["acks"] == {}
+    assert link.state["ned"] is None
+
+
+def test_the_gimbal_answers_from_a_component_of_its_own():
+    """Only the system is checked for the mount: it is not the autopilot."""
+    link = link_with(FakeMav([
+        FakeMessage("GIMBAL_DEVICE_ATTITUDE_STATUS", 1,
+                    mavutil.mavlink.MAV_COMP_ID_GIMBAL,
+                    q=gimbal_quaternion(-20.0, 0.0)),
+        FakeMessage("MOUNT_STATUS", 42, 1, pointing_a=0, pointing_b=0,
+                    pointing_c=0)]))
+    link.pump_once()
+    assert link.state["gimbal"][0] == pytest.approx(-20.0, abs=0.01)
+    link.pump_once()                            # another aircraft's mount
+    assert link.state["gimbal"][0] == pytest.approx(-20.0, abs=0.01)
 
 
 def test_no_gimbal_no_angle():
