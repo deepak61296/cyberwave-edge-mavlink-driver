@@ -13,12 +13,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cyberwave_edge_mavlink_driver import simulated  # noqa: E402
+from cyberwave_edge_mavlink_driver.contract import NOT_SUPPORTED  # noqa: E402
 from cyberwave_edge_mavlink_driver.driver import MavlinkDriver  # noqa: E402
-from cyberwave_edge_mavlink_driver.simulated import (  # noqa: E402
-    NOT_SUPPORTED, SimLink, SimVehicle,
-)
+from cyberwave_edge_mavlink_driver.simulated import SimLink, SimVehicle  # noqa: E402
 from cyberwave_edge_mavlink_driver.telemetry import Telemetry  # noqa: E402
-from cyberwave_edge_mavlink_driver.vehicle import pick_vehicle  # noqa: E402
+from cyberwave_edge_mavlink_driver.vehicle import NAN, Refused, pick_vehicle  # noqa: E402
 
 
 class Clock:
@@ -181,23 +180,22 @@ def test_kill_in_the_air_drops_the_aircraft():
     assert v.alt() == 0.0
 
 
-def test_reboot_and_compass_calibration_refuse_with_the_motors_running():
-    v, clock = sim()
-    assert v.compass_calibration(True) == (True, "")
+def test_reboot_refuses_with_the_motors_running():
+    v, _ = sim()
+    v.compass_calibration(True)
     assert v.calibrating
     assert v.set_armed(True) == (True, "")
     assert v.reboot() == (False, "motors running")
-    assert v.compass_calibration(True) == (False, "motors running")
-    assert v.compass_calibration(False) == (True, "")    # stopping is never refused
     assert v.set_armed(False) == (True, "")
     assert v.reboot() == (True, "")
 
 
-def test_set_home_takes_coordinates_and_checks_them():
+def test_set_home_records_the_coordinates_it_is_given():
     v, _ = sim()
-    assert v.set_home(12.9716, 77.5946, 900.0) == (True, "")
+    v.set_home(12.9716, 77.5946, 900.0)
     assert v.home_fix == (12.9716, 77.5946, 900.0)
-    assert v.set_home(120.0, 0.0, 0.0) == (False, "coordinates out of range")
+    v.set_home(12.0, 77.0, None)            # no altitude keeps the one home has
+    assert v.home_fix == (12.0, 77.0, 900.0)
 
 
 def test_an_unknown_profile_flies_the_quad():
@@ -263,10 +261,10 @@ def test_cancel_clears_a_pending_confirm():
 
 def test_gimbal_point_clamps_to_the_pitch_limit():
     v, clock = sim("sim://dji")
-    assert v.gimbal_point(-120.0, None, True) == (True, "")
+    v.gimbal_point(-120.0, NAN, True)
     step(v, clock, 1.0)
     assert v.gimbal_attitude() == (-90.0, 0.0)
-    assert v.gimbal_point(200.0, None, True) == (True, "")
+    v.gimbal_point(200.0, NAN, True)
     step(v, clock, 1.0)
     assert v.gimbal_attitude() == (60.0, 0.0)
 
@@ -275,10 +273,10 @@ def test_gimbal_point_relative_and_over_a_duration():
     v, clock = sim()
     v.gimbal_point(-10.0, 20.0, True)
     step(v, clock, 1.0)
-    v.gimbal_point(-10.0, None, False)
+    v.gimbal_point(-10.0, NAN, False)
     step(v, clock, 1.0)
     assert v.gimbal_attitude() == (-20.0, 20.0)
-    v.gimbal_point(-50.0, None, True, duration_s=2.0)
+    v.gimbal_point(-50.0, NAN, True, duration_s=2.0)
     step(v, clock, 1.0)
     assert v.gimbal_attitude()[0] == pytest.approx(-35.0)   # half way there
     step(v, clock, 1.5)
@@ -286,18 +284,21 @@ def test_gimbal_point_relative_and_over_a_duration():
 
 
 def test_gimbal_yaw_is_refused_on_dji_and_limited_on_the_quad():
-    v, clock = sim("sim://dji")
-    assert v.gimbal_point(None, 30.0, True) == (False, NOT_SUPPORTED)
-    assert v.gimbal_rate(0.0, 10.0) == (False, NOT_SUPPORTED)
+    v, _ = sim("sim://dji")
+    with pytest.raises(Refused, match=NOT_SUPPORTED):
+        v.gimbal_point(NAN, 30.0, True)
+    with pytest.raises(Refused, match=NOT_SUPPORTED):
+        v.gimbal_rate(0.0, 10.0)
+    v.gimbal_rate(-5.0, NAN)            # the axis left out is not a refusal
     q, qclock = sim()
-    assert q.gimbal_point(None, 400.0, True) == (True, "")
+    q.gimbal_point(NAN, 400.0, True)
     step(q, qclock, 2.0)
     assert q.gimbal_attitude() == (0.0, 160.0)
 
 
 def test_gimbal_rate_runs_until_it_stops_refreshing():
     v, clock = sim("sim://dji")
-    assert v.gimbal_rate(-10.0, 0.0) == (True, "")
+    v.gimbal_rate(-10.0, NAN)
     step(v, clock, 0.4)
     assert v.gimbal_attitude()[0] == pytest.approx(-4.0)
     step(v, clock, 2.0)                 # no refresh, so it stopped at 0.5 s
@@ -396,6 +397,46 @@ def test_driver_runs_the_discrete_verbs_against_the_dji_sim(dji):
     assert run(dji, "land")["status"] == "ok"
     until(lambda: dji.telemetry.flight_state() == "ready")
     assert not dji.vehicle.armed()
+
+
+def test_driver_runs_the_dji_catalog_verbs_against_the_sim(dji):
+    """The nine verbs the DJI catalog adds, on the aircraft's own terms."""
+    assert run(dji, "reboot_aircraft")["status"] == "ok"
+
+    assert run(dji, "set_gimbal_pitch", pitch=-40.0)["status"] == "ok"
+    until(lambda: dji.vehicle.gimbal_attitude()[0] == -40.0)
+    assert run(dji, "gimbal_rotate", pitch=-90.0, mode="absolute",
+               duration=0.2)["status"] == "ok"
+    until(lambda: dji.vehicle.gimbal_attitude()[0] == -90.0)
+    assert dji.telemetry.vehicle_state()["gimbal_pitch"] == -90.0
+
+    # the Mini 4 Pro gimbal does not yaw, so a yaw-only request is refused
+    reply = run(dji, "gimbal_rotate", yaw=30.0)
+    assert (reply["status"], reply["reason"]) == ("error", NOT_SUPPORTED)
+    assert run(dji, "gimbal_rotate", roll=10.0)["reason"] == NOT_SUPPORTED
+
+    assert run(dji, "gimbal_rotate_speed", pitch=300)["status"] == "ok"
+    assert dji.vehicle.gimbal_dps == (30.0, 0.0)   # the SDK sends 0.1 deg/s
+
+    assert run(dji, "set_home_location", latitude=12.9716,
+               longitude=77.5946)["status"] == "ok"
+    assert dji.vehicle.home_fix == (12.9716, 77.5946, None)
+    assert run(dji, "set_home_location", latitude=200.0,
+               longitude=0.0)["reason"] == "coordinates out of range"
+
+    assert run(dji, "start_compass_calibration")["status"] == "ok"
+    assert dji.vehicle.calibrating
+    assert run(dji, "stop_compass_calibration")["status"] == "ok"
+    assert not dji.vehicle.calibrating
+
+
+def test_gimbal_sticks_move_the_camera_from_the_tick(dji):
+    """gimbal_pitch_down is a stick, so the tick streams it and it expires."""
+    dji._on_stick({"source_type": "tele", "command": "gimbal_pitch_down",
+                   "data": {"rate": 20.0}, "timestamp": time.time()})
+    dji._tick_gimbal(time.time())
+    until(lambda: dji.vehicle.gimbal_attitude()[0] < -0.5)
+    assert not dji.mq.replies                      # a stick draws no reply
 
 
 def until(cond, timeout=5.0):

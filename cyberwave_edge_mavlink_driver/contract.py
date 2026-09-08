@@ -4,10 +4,20 @@
 DISCRETE = (
     "takeoff", "land", "return_to_home",
     "cancel_takeoff", "cancel_landing", "cancel_return_to_home",
-    "emergency_stop", "set_home_here", "reboot",
+    "emergency_stop", "set_home_here", "set_home_location",
+    "reboot", "reboot_aircraft",
     "arm", "disarm", "brake", "kill",
     "hover",    # what the SDK's flight handle sends; another name for brake
+    "gimbal_rotate", "set_gimbal_pitch", "gimbal_rotate_speed",
+    "start_compass_calibration", "stop_compass_calibration",
 )
+
+# One verb, two names: the DJI catalog carries both and means the same thing.
+REBOOT = ("reboot", "reboot_aircraft")
+
+# Refusals whose words the contract fixes, so every driver says them the same.
+NOT_SUPPORTED = "not supported on this vehicle"
+MOTORS_RUNNING = "motors running"
 
 # These do not queue: whatever discrete verb is running gives way to them.
 # stop is not one of them. The SDK ends every stick burst with a stop, so a
@@ -47,11 +57,23 @@ STICKS = {
     "turn_left":     ("Yaw left", "angular_z"),
 }
 
+# Camera sticks. Same dead-man as the flight sticks, but they move the
+# gimbal and not the aircraft, so they are live on the ground too.
+GIMBAL_STICKS = {
+    "gimbal_pitch_up":   ("Tilt the camera up", 1),
+    "gimbal_pitch_down": ("Tilt the camera down", -1),
+}
+
+# every verb the driver treats as a stick, the aircraft's and the camera's
+STICK_VERBS = tuple(CONTINUOUS) + tuple(GIMBAL_STICKS)
+
 STICK_TIMEOUT_S = 0.5      # no refresh in this long and the sticks release
 MAX_TRAVEL_S = 30.0        # the longest a distance may keep the sticks live
 DEFAULT_SPEED = 1.0        # m/s when a stick command carries no magnitude
 DEFAULT_YAW_RATE = 0.5     # rad/s
 DEFAULT_TAKEOFF_ALT = 2.0  # m
+DEFAULT_GIMBAL_RATE = 30.0  # deg/s when a gimbal stick carries no rate
+SPEED_UNIT_PER_DPS = 10.0   # the SDK sends gimbal rates in 0.1 deg/s
 
 # What the catalog is told about a verb: command -> (description, args), an
 # argument being (name, default, unit). define_interface turns these into the
@@ -76,6 +98,25 @@ CATALOG = {
     "kill": ("Cut the motors now; in the air it takes force",
              (("force", False, None),)),
     "hover": ("Hold position, the flight handle's word for brake", ()),
+    "set_home_location": ("Make the given point home",
+                          (("latitude", None, "deg"), ("longitude", None, "deg"),
+                           ("altitude", None, "m"))),
+    "reboot_aircraft": ("Reboot the flight controller, the catalog's other "
+                        "name for reboot", ()),
+    "gimbal_rotate": ("Point the camera, by mode absolute or relative to where "
+                      "it is now",
+                      (("pitch", None, "deg"), ("yaw", None, "deg"),
+                       ("roll", None, "deg"), ("mode", "absolute", None),
+                       ("duration", None, "s"))),
+    "set_gimbal_pitch": ("Point the camera at an absolute pitch",
+                         (("pitch", 0.0, "deg"),)),
+    "gimbal_rotate_speed": ("Turn the camera at a rate until it is stopped",
+                            (("pitch", None, "0.1 deg/s"),
+                             ("yaw", None, "0.1 deg/s"),
+                             ("roll", None, "0.1 deg/s"))),
+    "start_compass_calibration": ("Begin compass calibration, refused with the "
+                                  "motors running", ()),
+    "stop_compass_calibration": ("Abort a compass calibration", ()),
 }
 
 # Every stick verb takes the same two: how fast, and how far.
@@ -86,6 +127,13 @@ for _verb, (_words, _axis) in STICKS.items():
         ((_axis, DEFAULT_YAW_RATE if _turn else DEFAULT_SPEED,
           "rad/s" if _turn else "m/s"),
          ("distance", None, "rad" if _turn else "m")))
+
+# The camera sticks take a rate and, like the others, an optional angle to
+# travel. Their axis is gimbal pitch, so both are in degrees.
+for _verb, (_words, _sign) in GIMBAL_STICKS.items():
+    CATALOG[_verb] = (
+        f"{_words} while the bursts keep coming, or by the angle given",
+        (("rate", DEFAULT_GIMBAL_RATE, "deg/s"), ("distance", None, "deg")))
 
 
 def flight_state(connected, armed, in_air, returning, was_airborne):

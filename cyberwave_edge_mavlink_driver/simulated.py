@@ -16,7 +16,7 @@ import time
 
 from . import contract
 from .link import MavlinkLink
-from .vehicle import Vehicle
+from .vehicle import Refused, Vehicle
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ DJI_TAKEOFF_M = 1.2     # DJI climbs to this whatever altitude was asked for
 TILT_RAD_PER_MPS = 0.1  # how far the model leans into the direction it flies
 MAX_TILT_RAD = 0.35
 GIMBAL_SNAP_DPS = 400.0  # a point move with no duration, near enough instant
-NOT_SUPPORTED = "not supported on this vehicle"
 
 ZERO = (0.0, 0.0, 0.0, 0.0)
 
@@ -147,7 +146,7 @@ class SimVehicle(Vehicle):
 
     def set_armed(self, arm, force=False, timeout=5.0):
         if not self.profile.can_arm:
-            return False, NOT_SUPPORTED
+            return False, contract.NOT_SUPPORTED
         self.link.state["armed"] = bool(arm)
         if not arm:
             self.task, self.pending, self.stick = None, None, ZERO
@@ -155,7 +154,7 @@ class SimVehicle(Vehicle):
 
     def kill(self):
         if not self.profile.can_kill:
-            return False, NOT_SUPPORTED
+            return False, contract.NOT_SUPPORTED
         logger.warning("motors cut")
         return self.set_armed(False, force=True)
 
@@ -206,25 +205,20 @@ class SimVehicle(Vehicle):
     def set_home(self, lat, lon, alt_m):
         """Record a home point given as coordinates.
 
-        The model flies in metres from where it started, so the coordinates
-        are kept as they arrived and return_to_home still uses the local home.
+        The model flies in metres from where it started, so the point is kept
+        as it arrived and return_to_home still flies to the local home.
         """
-        if not -90 <= float(lat) <= 90 or not -180 <= float(lon) <= 180:
-            return False, "coordinates out of range"
-        self.home_fix = (float(lat), float(lon), float(alt_m))
-        return True, ""
+        height = self.home_fix[2] if alt_m is None and self.home_fix else alt_m
+        self.home_fix = (float(lat), float(lon), height)
 
     def reboot(self):
         if self.armed():
-            return False, "motors running"
+            return False, contract.MOTORS_RUNNING
         self.task, self.pending, self.stick = None, None, ZERO
         return True, ""
 
     def compass_calibration(self, start):
-        if start and self.armed():
-            return False, "motors running"
         self.calibrating = bool(start)
-        return True, ""
 
     def prepare_sticks(self):
         if self.armed() and self.task is None:
@@ -244,31 +238,36 @@ class SimVehicle(Vehicle):
     # -- gimbal ----------------------------------------------------------
 
     def gimbal_point(self, pitch_deg, yaw_deg, absolute, duration_s=None):
-        """Aim the gimbal, in degrees. None is an axis nobody asked for."""
+        """Aim the gimbal, in degrees. A NaN axis is one nobody asked for."""
         target = list(self.aim or self.gimbal)
         for axis, asked in enumerate((pitch_deg, yaw_deg)):
-            if asked is None:
+            if asked != asked:
                 continue
-            limits = self.profile.gimbal[axis]
-            if limits is None:
-                return False, NOT_SUPPORTED
-            want = float(asked) if absolute else target[axis] + float(asked)
-            target[axis] = clamp(want, *limits)
+            target[axis] = clamp(asked if absolute else target[axis] + asked,
+                                 *self._limits(axis))
         far = max(abs(t - g) for t, g in zip(target, self.gimbal))
         self.aim = target
         self.aim_dps = far / duration_s if duration_s else GIMBAL_SNAP_DPS
         self.gimbal_dps = (0.0, 0.0)
-        return True, ""
 
     def gimbal_rate(self, pitch_dps, yaw_dps):
         """Turn the gimbal until it is zeroed, stops refreshing or hits a stop."""
+        rates = []
         for axis, asked in enumerate((pitch_dps, yaw_dps)):
-            if asked and self.profile.gimbal[axis] is None:
-                return False, NOT_SUPPORTED
-        self.gimbal_dps = (float(pitch_dps or 0.0), float(yaw_dps or 0.0))
+            asked = 0.0 if asked != asked else float(asked)
+            if asked:
+                self._limits(axis)      # an axis that does not steer refuses
+            rates.append(asked)
+        self.gimbal_dps = tuple(rates)
         self.gimbal_at = self.now()
         self.aim = None
-        return True, ""
+
+    def _limits(self, axis):
+        """How far this gimbal axis goes, or a refusal if it does not turn."""
+        limits = self.profile.gimbal[axis]
+        if limits is None:
+            raise Refused(contract.NOT_SUPPORTED)
+        return limits
 
     def gimbal_attitude(self):
         """Pitch and yaw in degrees, or None on a vehicle without a gimbal."""
