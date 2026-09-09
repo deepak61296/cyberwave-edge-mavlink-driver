@@ -360,6 +360,18 @@ def test_ardupilot_hold_on_the_ground_does_nothing():
     assert link.m.sent == []
 
 
+def test_ardupilot_holds_a_takeoff_that_has_not_left_the_ground_yet():
+    """A cancel a second into the climb: the landed state still says on the
+    ground and NAV_TAKEOFF climbs on unless the mode actually changes."""
+    link = link_with(lambda sys, comp, cmd, conf, p1, p2, *rest:
+                     link.state.__setitem__("mode", int(p2))
+                     if cmd == SET_MODE else None)
+    link.state["armed"] = True
+    assert ArduPilot(link).hold() == (True, "")
+    assert link.m.commands() == [SET_MODE]
+    assert link.m.sent[-1][5] == COPTER_MODES["BRAKE"]
+
+
 def test_ardupilot_release_is_one_zero_setpoint():
     link = link_with()
     ArduPilot(link).release_sticks()
