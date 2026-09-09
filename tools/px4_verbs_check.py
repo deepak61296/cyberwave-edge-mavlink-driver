@@ -119,6 +119,10 @@ def home_round(bench, where):
     show_home(v)
     bench.call(f"set_home({lat:.7f}, {lon:.7f}, None)",
                lambda: v.set_home(lat, lon, None), expect="accepted")
+    # home stays where the round left it, so put it back at the aircraft's
+    # own height or the takeoff after this reads 10 m low
+    bench.call(f"set_home({lat:.7f}, {lon:.7f}, {v.amsl():.2f})",
+               lambda: v.set_home(lat, lon, v.amsl()), expect="accepted")
     show_home(v)
 
 
