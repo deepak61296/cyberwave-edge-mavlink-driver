@@ -112,7 +112,11 @@ class ArduPilot(Vehicle):
         return self.set_mode("RTL")
 
     def hold(self):
-        if not self.in_air():
+        # Armed is the test, not airborne: a takeoff cancelled in its first
+        # second is still on the ground by the landed state, and NAV_TAKEOFF
+        # goes on climbing under a hold that does nothing. Disarmed there is
+        # nothing to stop, and the contract refuses the verb anyway.
+        if not self.armed():
             return True, ""
         return self.set_mode("BRAKE")
 
