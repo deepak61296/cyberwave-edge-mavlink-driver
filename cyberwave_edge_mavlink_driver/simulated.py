@@ -174,7 +174,18 @@ class SimVehicle(Vehicle):
         if self._wait(lambda: self.task != "takeoff", TAKEOFF_S):
             logger.info("airborne at %.1f m", self.alt())
             return True, ""
-        return False, f"still climbing, {self.alt():.1f} m of {self.target_m:.1f} m"
+        return self.takeoff_failed(
+            f"still climbing, {self.alt():.1f} m of {self.target_m:.1f} m")
+
+    def takeoff_failed(self, reason):
+        """The base rule: a takeoff that never left the ground stops its
+        motors, one that was cut short leaves them to the verb that cut it.
+        The model is parked as well, since a DJI has no arming key to disarm.
+        """
+        answer = super().takeoff_failed(reason)
+        if not self.abort.is_set() and not self.in_air():
+            self._park()
+        return answer
 
     def takeoff_altitude(self, asked):
         # takeoff returns once the climb is done, so this is the real height
@@ -207,8 +218,14 @@ class SimVehicle(Vehicle):
         self.home = [self.ned[0], self.ned[1]]
         return True, ""
 
+    def home_amsl(self):
+        """The height home was given, above mean sea level. There is no
+        HOME_POSITION on this link for the base to read."""
+        return None if self.home_fix is None else self.home_fix[2]
+
     def set_home(self, lat, lon, alt_m):
-        """Record a home point given as coordinates.
+        """Record a home point given as coordinates. alt_m is metres above
+        mean sea level, the contract's frame for a global altitude.
 
         The model flies in metres from where it started, so the point is kept
         as it arrived and return_to_home still flies to the local home.

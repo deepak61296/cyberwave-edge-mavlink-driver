@@ -1,6 +1,7 @@
 """The simulated aircraft: the model, the two profiles and the driver's
 command path against sim://dji. No aircraft, no broker, no network."""
 
+import asyncio
 import math
 import sys
 import threading
@@ -449,3 +450,61 @@ def until(cond, timeout=5.0):
     while time.time() < end and not cond():
         time.sleep(0.01)
     assert cond()
+
+
+# --- the base's rules, on the simulated aircraft ----------------------
+
+def test_a_cancelled_takeoff_is_superseded_and_keeps_its_motors(dji, monkeypatch):
+    """cancel_takeoff is urgent now: it sets abort before it queues, the
+    climb gives way, and the aircraft holds where it is with the motors on."""
+    # the quad's profile in this harness: a DJI is at its 1.2 m before a
+    # cancel could be typed, and the driver path is what is under test
+    dji.vehicle.profile = simulated.QUAD
+
+    started = threading.Event()
+
+    def climb():
+        started.set()
+        run(dji, "takeoff", altitude=40.0)
+
+    flier = threading.Thread(target=climb, daemon=True)
+    flier.start()
+    started.wait(1.0)
+    time.sleep(0.05)
+
+    asyncio.run(dji._on_command({"source_type": "tele", "command": "cancel_takeoff",
+                                 "data": {}, "timestamp": time.time()}))
+    flier.join(5.0)
+    assert not flier.is_alive()
+
+    said = {r["command"]: r for r in dji.mq.replies}
+    assert said["takeoff"]["status"] == "error"
+    assert said["takeoff"]["reason"] == "superseded"
+    assert said["cancel_takeoff"]["status"] == "ok"
+    assert dji.vehicle.armed() and dji.vehicle.in_air()
+    assert 0.0 < dji.vehicle.alt() < 40.0
+    assert dji.vehicle.task is None      # holding, not still climbing
+
+
+@pytest.mark.parametrize("connection", ["sim://quad", "sim://dji"])
+def test_a_takeoff_that_never_leaves_the_ground_stops_the_motors(connection, monkeypatch):
+    """The base's takeoff_failed, which the backends gained with the review:
+    no climb, no motors. The DJI has no arming key, so the model parks."""
+    monkeypatch.setattr(simulated, "TAKEOFF_S", 0.05)
+    v, _ = sim(connection)          # nothing ticks it, so it never climbs
+    ok, reason = v.takeoff(3.0)
+    assert not ok and reason.startswith("still climbing")
+    assert not v.armed() and not v.in_air()
+    assert v.task is None
+
+
+def test_home_is_kept_above_mean_sea_level():
+    """set_home takes AMSL after the review, and home_amsl reads it back
+    without the HOME_POSITION message this link never carries."""
+    v, _ = sim()
+    assert v.home_amsl() is None
+    v.set_home(12.9716, 77.5946, 921.0)
+    assert v.home_fix == (12.9716, 77.5946, 921.0)
+    assert v.home_amsl() == 921.0
+    v.set_home(12.9716, 77.5946, None)      # no altitude keeps the height
+    assert v.home_amsl() == 921.0
