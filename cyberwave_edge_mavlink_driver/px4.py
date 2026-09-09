@@ -12,8 +12,9 @@ import time
 
 from pymavlink import mavutil
 
+from .contract import NOT_SUPPORTED
 from .link import BODY_NED
-from .vehicle import Refused, Vehicle, result_name
+from .vehicle import Refused, Vehicle, refusal, result_name
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,6 @@ ALL_GIMBALS = 0             # device id 0: whichever mount the manager has
 GIMBAL_ACK_S = 2.0
 CALIBRATION_S = 3.0         # the ack is quick; the [cal] line follows it
 CALIBRATION_TRIES = 8       # a cancel lands between sampling steps, not during one
-NO_GIMBAL = "not supported on this vehicle"
 
 
 def custom_mode(main, sub=0):
@@ -53,18 +53,6 @@ def mode_name(custom):
         return "AUTO." + subs.get(sub, str(sub))
     mains = {v: k for k, v in MAIN.items()}
     return mains.get(main, f"MODE({main},{sub})")
-
-
-def refusal(reason):
-    """A refusal in the contract's words where they fit, else the FC's own.
-
-    Silence and UNSUPPORTED say the same thing to a caller: this aircraft
-    does not do that. Everything else is the autopilot's own verdict and
-    goes back untouched.
-    """
-    if reason.startswith("no COMMAND_ACK") or reason == "MAV_RESULT_UNSUPPORTED":
-        return NO_GIMBAL
-    return reason
 
 
 def pitch_yaw_degrees(q):
@@ -91,6 +79,7 @@ class PX4(Vehicle):
         super().__init__(link)
         self._heartbeat_at = 0.0
         self._gimbal = None     # None until we have asked the manager for control
+        self._claim_at = None   # when the tick's own CONFIGURE went out
 
     def tick(self):
         # PX4 sends STATUSTEXT only to a link that has heartbeated as a GCS in
@@ -149,7 +138,7 @@ class PX4(Vehicle):
         if self.in_air():
             return False, (f"still climbing, {self.link.state['alt']:.1f} m of "
                            f"{altitude:.1f} m after {TAKEOFF_CONFIRM_S:.0f}s")
-        return False, "armed but never left the ground"
+        return self.takeoff_failed("armed but never left the ground")
 
     def takeoff_altitude(self, asked):
         # takeoff here returns only once the altitude is reached, so the
@@ -227,11 +216,17 @@ class PX4(Vehicle):
         stick moves it a tenth of a degree. The message leaves a NaN
         quaternion alone, and that is what lets the rate add up. Nothing
         acks it, and PX4 stops the mount itself 2 s after the last one.
+
+        This runs on the tick, so the manager is claimed without waiting for
+        the ack: two seconds here is two seconds with no flight setpoint, and
+        PX4 gives up on OFFBOARD after one.
         """
         if self._gimbal is None:
-            self._take_gimbal()
+            self._gimbal = self._claim_gimbal()
+        if self._gimbal is None:
+            return                  # the claim is out; its ack lands on a later pass
         if not self._gimbal:
-            raise Refused(NO_GIMBAL)
+            raise Refused(NOT_SUPPORTED)
         self.link.m.mav.gimbal_manager_set_attitude_send(
             self.link.m.target_system, self.link.m.target_component,
             0, ALL_GIMBALS, [NAN] * 4, NAN,
@@ -262,12 +257,15 @@ class PX4(Vehicle):
 
         param1 = 0 means "take the coordinates in this message". They go as
         COMMAND_INT because a COMMAND_LONG carries the latitude in a float32
-        and puts home a foot or two from where it was asked for. PX4 denies
-        a non-finite altitude, so with none given we send the aircraft's own
-        height above sea level.
+        and puts home a foot or two from where it was asked for. The altitude
+        is AMSL, as every global altitude in the contract is. PX4 denies a
+        non-finite one, so with none given we send the height home already
+        has, and the aircraft's own only if there is no home yet.
         """
         if not self.link.ready():
             raise Refused("not connected")
+        if alt_m is None:
+            alt_m = self.home_amsl()
         if alt_m is None:
             alt_m = self.amsl()
             if alt_m is None:
@@ -323,7 +321,8 @@ class PX4(Vehicle):
 
         PX4 denies every pitchyaw command from anyone else, and an aircraft
         with no gimbal module running never answers at all: the commander
-        leaves both gimbal commands to a module that is not there.
+        leaves both gimbal commands to a module that is not there. This one
+        waits for the ack, so only a verb thread may call it.
         """
         ok, reason = self._acked(
             mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE,
@@ -332,3 +331,22 @@ class PX4(Vehicle):
         self._gimbal = ok
         if not ok:
             raise Refused(refusal(reason))
+
+    def _claim_gimbal(self):
+        """The same claim for the tick: send once, read the ack later.
+
+        True once the manager is ours, False when it was refused or nothing
+        answered in time, None while the ack is still out.
+        """
+        if not self.link.ready():
+            return None
+        cmd = mavutil.mavlink.MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE
+        if self._claim_at is None:
+            self._claim_at = time.time()
+            self.link.send_command(cmd, self.link.m.mav.srcSystem,
+                                   self.link.m.mav.srcComponent, -1, -1,
+                                   0, 0, ALL_GIMBALS)
+        result = self.link.state["acks"].pop(cmd, None)
+        if result is not None:
+            return result == mavutil.mavlink.MAV_RESULT_ACCEPTED
+        return None if time.time() - self._claim_at < GIMBAL_ACK_S else False

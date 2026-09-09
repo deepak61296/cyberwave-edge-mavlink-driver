@@ -24,6 +24,11 @@ STATUSTEXT_CHUNK = 50   # bytes per STATUSTEXT; longer lines arrive in pieces
 BODY_OFFSET_NED = mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED
 BODY_NED = mavutil.mavlink.MAV_FRAME_BODY_NED
 
+# global frames: AMSL is what the contract means by an altitude, and zero in
+# the relative one is whatever height home already has
+GLOBAL_AMSL = mavutil.mavlink.MAV_FRAME_GLOBAL
+GLOBAL_RELATIVE_ALT = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+
 # HEARTBEAT types that are never the aircraft
 NON_VEHICLE_HEARTBEAT_TYPES = frozenset({
     mavutil.mavlink.MAV_TYPE_GCS,
@@ -235,6 +240,19 @@ class MavlinkLink:
             s["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             s["mode"] = msg.custom_mode
             s["last_heartbeat"] = now
+        elif msg.get_srcSystem() != self.m.target_system:
+            # a second aircraft or a companion behind a router: its position,
+            # its landed state and its acks are not this vehicle's
+            return k
+        elif k == "GIMBAL_DEVICE_ATTITUDE_STATUS":
+            # the mount answers as a component of its own, so only the system
+            # is checked for the two it sends
+            s["gimbal"] = pitch_yaw_from_quaternion(msg.q)
+        elif k == "MOUNT_STATUS":
+            # what a mount too old for the v2 protocol reports, in centidegrees
+            s["gimbal"] = (msg.pointing_a / 100.0, msg.pointing_c / 100.0)
+        elif msg.get_srcComponent() != self.m.target_component:
+            return k    # everything below is the autopilot's own report
         elif k == "COMMAND_ACK":
             s["acks"][msg.command] = msg.result
         elif k == "GLOBAL_POSITION_INT":
@@ -244,11 +262,6 @@ class MavlinkLink:
         elif k == "ATTITUDE":
             s["attitude"] = (msg.roll, msg.pitch, msg.yaw)
             s["last_attitude"] = now
-        elif k == "GIMBAL_DEVICE_ATTITUDE_STATUS":
-            s["gimbal"] = pitch_yaw_from_quaternion(msg.q)
-        elif k == "MOUNT_STATUS":
-            # what a mount too old for the v2 protocol reports, in centidegrees
-            s["gimbal"] = (msg.pointing_a / 100.0, msg.pointing_c / 100.0)
         elif k == "SERVO_OUTPUT_RAW":
             s["servo_pwm"] = (msg.servo1_raw, msg.servo2_raw,
                               msg.servo3_raw, msg.servo4_raw)
@@ -320,7 +333,7 @@ class MavlinkLink:
             self.m.target_system, self.m.target_component, cmd, 0, *params)
 
     def send_command_int(self, cmd, *params, x=0, y=0, z=0.0,
-                         frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT):
+                         frame=GLOBAL_RELATIVE_ALT):
         """COMMAND_INT: four float params, then x and y in 1e7 degrees.
 
         A home point sent as a float32 lands half a metre from where it was

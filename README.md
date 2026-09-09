@@ -38,7 +38,7 @@ Implements the standard Cyberwave drone vocabulary (as published on the
 | discrete | `stop` (registered by the SDK base) | zero the sticks | zero the sticks, then Hold |
 | discrete | `kill` | force disarm, refused in the air without `force` | same |
 | discrete | `set_home_here`, `reboot`, `reboot_aircraft` | `DO_SET_HOME`, `PREFLIGHT_REBOOT_SHUTDOWN` (refused with the motors running); the two reboot names are one verb | same |
-| discrete | `set_home_location` | `DO_SET_HOME` as a `COMMAND_INT`, so the coordinates arrive whole | same; needs a global position |
+| discrete | `set_home_location` | `DO_SET_HOME` as a `COMMAND_INT`, so the coordinates arrive whole; `altitude` is AMSL, and with none given home keeps the height it has | same; needs a global position |
 | discrete | `gimbal_rotate`, `set_gimbal_pitch`, `gimbal_rotate_speed` | `DO_GIMBAL_MANAGER_PITCHYAW`, gimbal protocol v2 | angles the same way; rates through `GIMBAL_MANAGER_SET_ATTITUDE`, since PX4 1.18 ignores the rate fields of the command |
 | discrete | `start_compass_calibration`, `stop_compass_calibration` | `DO_START_MAG_CAL`, `DO_CANCEL_MAG_CAL`; the start is refused with the motors running | `PREFLIGHT_CALIBRATION` with the mag flag; the all-zero form cancels; refused with the motors running |
 | discrete (extension) | `arm`, `disarm` | `MAV_CMD_COMPONENT_ARM_DISARM`, confirmed against the vehicle's own armed bit; `disarm` is refused in the air without `force` | same; force arm is not possible over MAVLink |

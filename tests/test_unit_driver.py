@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,11 @@ def send(d, envelope):
     """One envelope through the async handler, the reply if any."""
     asyncio.run(d._on_command(envelope))
     return d.client.mqtt.replies[-1] if d.client.mqtt.replies else None
+
+
+async def send_async(d, envelope):
+    """The same, on a loop the caller keeps running."""
+    await d._on_command(envelope)
 
 
 def airborne(d):
@@ -350,6 +356,64 @@ def test_discrete_command_releases_the_sticks_first(driver):
     assert driver.vehicle.calls[0] == ("release",)
 
 
+def test_on_reconnect_does_not_hold_the_event_loop(driver):
+    """paho's connect blocks; the tick has to keep running through it."""
+    started, connected_at, ticked_at = threading.Event(), [], []
+
+    def connect():
+        started.set()
+        time.sleep(0.3)
+        connected_at.append(time.time())
+    driver.client.mqtt.connect = connect
+
+    async def reconnect():
+        task = asyncio.ensure_future(driver.on_reconnect())
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.05)
+        ticked_at.append(time.time())       # a tick, while the connect runs
+        return await task
+
+    assert asyncio.run(reconnect()) is True
+    assert ticked_at[0] < connected_at[0]
+
+
+def test_a_stick_that_lands_mid_verb_does_not_survive_it(driver):
+    """Its check ran before the verb took the aircraft and its store lands
+    after the verb let the sticks go: it must not sit there and then stream."""
+    driver.link.state["armed"], driver.link.state["alt"] = True, 3.0
+    v, reading, released, finish = (driver.vehicle, threading.Event(),
+                                    threading.Event(), threading.Event())
+    window = driver._window
+
+    def slow_window(cmd, data, rate):
+        reading.set()               # past the _running check, not yet stored
+        released.wait(5.0)
+        return window(cmd, data, rate)
+    driver._window = slow_window
+
+    def hold():
+        released.set()              # the sticks are already released here
+        finish.wait(5.0)
+        return True, ""
+    v.hold = hold
+
+    stick = threading.Thread(target=driver._on_stick, args=(
+        {"source_type": "tele", "command": "move_forward", "data": {}},))
+    stick.start()
+    assert reading.wait(5.0)
+    verb = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "brake", "data": {}}))
+    verb.start()
+    stick.join(5.0)
+    finish.set()
+    verb.join(5.0)
+    assert driver._stick is None
+    v.calls.clear()
+    driver._tick_sticks(time.time())
+    assert v.calls == []            # and nothing of it reaches the aircraft
+
+
 @pytest.mark.parametrize("urgent", contract.URGENT)
 def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     """A kill must not queue behind a takeoff that waits half a minute."""
@@ -374,6 +438,64 @@ def test_an_urgent_verb_cuts_a_running_one_short(driver, urgent):
     t.join(5.0)
     by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
     assert by_verb["takeoff"]["reason"] == "superseded"
+
+
+def test_an_urgent_verb_pre_empts_before_it_reaches_a_worker(driver):
+    """The executor's pool is small and the SDK ends every burst with a stop:
+    a kill queued behind them must not wait for a worker to free."""
+    v, in_takeoff, queued, gave_way = driver.vehicle, threading.Event(), [], []
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 5.0)     # ends the moment the abort is set
+        gave_way.append(time.time())
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    async def race():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        flying = asyncio.ensure_future(send_async(
+            driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+        while not in_takeoff.is_set():
+            await asyncio.sleep(0.01)
+        queued.append(time.time())      # the one worker is busy with the takeoff
+        killing = asyncio.ensure_future(send_async(
+            driver, {"source_type": "tele", "command": "kill", "data": {}}))
+        await asyncio.wait_for(asyncio.gather(flying, killing), 10.0)
+
+    asyncio.run(race())
+    assert gave_way[0] - queued[0] < 0.5
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["kill"]["status"] == "ok"
+    assert by_verb["takeoff"]["reason"] == "superseded"
+
+
+@pytest.mark.parametrize("cmd", ("cancel_takeoff", "hover"))
+def test_a_cancel_ends_the_verb_it_cancels(driver, cmd):
+    """A takeoff holds the aircraft until it is up; cancelling it after that
+    would hold at the altitude the cancel was sent to stop."""
+    driver.link.state["armed"] = True
+    v, in_takeoff = driver.vehicle, threading.Event()
+
+    def takeoff(altitude):
+        in_takeoff.set()
+        v._wait(lambda: False, 30.0)
+        return False, "gave up"
+    v.takeoff = takeoff
+
+    t = threading.Thread(target=send, args=(
+        driver, {"source_type": "tele", "command": "takeoff", "data": {}}))
+    t.start()
+    assert in_takeoff.wait(5.0)
+    t0 = time.time()
+    reply = send(driver, {"source_type": "tele", "command": cmd, "data": {}})
+    assert time.time() - t0 < 1.0
+    assert reply["status"] == "ok"
+    t.join(5.0)
+    by_verb = {r["command"]: r for r in driver.client.mqtt.replies}
+    assert by_verb["takeoff"]["reason"] == "superseded"
+    assert v.calls[-1] == ("hold",)
 
 
 def test_stop_does_not_cancel_a_running_verb(driver):
@@ -988,6 +1110,14 @@ def test_manifest_says_what_the_verbs_take():
         ["latitude", "longitude", "altitude"]
     for verb in list(contract.DISCRETE) + list(contract.STICK_VERBS):
         assert entries[verb]["description"]
+
+
+def test_nothing_pytest_collects_flies_an_aircraft():
+    """The live scripts are in tools/ now: bare pytest collects tests/ with
+    its own pattern, so a name like test_b2_*.py here would take off."""
+    here = Path(__file__).resolve().parent
+    assert sorted(p.name for p in here.glob("test_*.py")) == [
+        "test_unit_driver.py", "test_unit_link.py", "test_unit_vehicle.py"]
 
 
 def test_the_committed_catalog_is_the_generated_one():

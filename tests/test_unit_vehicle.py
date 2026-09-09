@@ -275,6 +275,61 @@ def test_ardupilot_takeoff_waits_for_the_aircraft_to_leave_the_ground(monkeypatc
     assert ArduPilot(link).takeoff(3.0) == (True, "")
 
 
+@pytest.mark.parametrize("takes_the_takeoff", [True, False])
+def test_ardupilot_stops_the_motors_when_the_takeoff_fails(monkeypatch,
+                                                           takes_the_takeoff):
+    """Refused NAV_TAKEOFF or no climb: either way the props are still
+    turning on a parked aircraft until the FC's own disarm delay."""
+    monkeypatch.setattr(ardupilot, "AIRBORNE_S", 0.3)
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = int(p2)
+        elif cmd == ARM:
+            link.state["armed"] = p1 == 1
+        elif cmd == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
+            link.state["acks"][cmd] = (mavutil.mavlink.MAV_RESULT_ACCEPTED
+                                       if takes_the_takeoff
+                                       else mavutil.mavlink.MAV_RESULT_DENIED)
+
+    link = link_with(autopilot)
+    v = ArduPilot(link)
+    v.abort.wait = lambda timeout=None: False   # no pause between the tries
+    ok, reason = v.takeoff(3.0)
+    assert not ok
+    assert reason == ("armed but never left the ground" if takes_the_takeoff
+                      else "NAV_TAKEOFF not accepted")
+    assert link.state["armed"] is False
+    disarm = [s for s in link.m.sent if s[2] == ARM and s[4] == 0]
+    assert disarm and disarm[-1][5] == 21196        # force, whatever it thinks
+
+
+def test_px4_stops_the_motors_when_the_takeoff_fails(monkeypatch):
+    monkeypatch.setattr(px4, "TAKEOFF_CONFIRM_S", 0.3)
+
+    def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
+        if cmd == SET_MODE:
+            link.state["mode"] = px4.custom_mode(int(p2), int(p3))
+        elif cmd == ARM:
+            link.state["armed"] = p1 == 1
+
+    link = link_with(autopilot)
+    ok, reason = PX4(link).takeoff(3.0)
+    assert (ok, reason) == (False, "armed but never left the ground")
+    assert link.state["armed"] is False
+
+
+def test_a_takeoff_cut_short_leaves_the_motors_to_the_verb_that_cut_it():
+    """cancel_takeoff a metre up is a hold, not a reason to stop the motors."""
+    link = link_with()
+    link.state["armed"] = True
+    v = ArduPilot(link)
+    v.abort.set()
+    assert v.takeoff_failed("armed but never left the ground") == (
+        False, "armed but never left the ground")
+    assert link.m.sent == []
+
+
 def test_ardupilot_takeoff_gives_way_to_a_kill_while_it_climbs():
     def autopilot(sys, comp, cmd, conf, p1, p2, p3, *rest):
         if cmd == SET_MODE:
@@ -384,6 +439,7 @@ def test_ardupilot_takes_the_time_a_duration_asks_for():
 def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
     """It is streamed from the tick, which may not block on anything."""
     link = link_with()
+    link.state["gimbal"] = (0.0, 0.0)
     t0 = time.time()
     ArduPilot(link).gimbal_rate(-30.0, 0.0)
     assert time.time() - t0 < 0.5
@@ -395,15 +451,38 @@ def test_ardupilot_gimbal_rate_does_not_wait_for_an_ack():
 
 def test_ardupilot_gimbal_rate_zeroes_the_axis_nobody_asked_for():
     link = link_with()
+    link.state["gimbal"] = (0.0, 0.0)
     ArduPilot(link).gimbal_rate(-15.0, NAN)
     assert link.m.sent[-1][6:8] == (-15.0, 0.0)
 
 
 def test_ardupilot_gimbal_refusal_carries_the_fc_result():
     link = link_with(lambda *a: link.state["acks"].__setitem__(
-        PITCHYAW, mavutil.mavlink.MAV_RESULT_UNSUPPORTED))
-    with pytest.raises(Refused, match="MAV_RESULT_UNSUPPORTED"):
+        PITCHYAW, mavutil.mavlink.MAV_RESULT_DENIED))
+    with pytest.raises(Refused, match="MAV_RESULT_DENIED"):
         ArduPilot(link).gimbal_point(0.0, 0.0, True)
+
+
+@pytest.mark.parametrize("result", [mavutil.mavlink.MAV_RESULT_UNSUPPORTED, None])
+def test_ardupilot_says_not_supported_the_way_px4_does(result):
+    """An aircraft that has no gimbal must read the same on both backends."""
+    def autopilot(*a):
+        if result is not None:
+            link.state["acks"][PITCHYAW] = result
+
+    link = link_with(autopilot)
+    v = ArduPilot(link)
+    v.abort.wait = lambda timeout=None: False       # do not sit out the ack
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        v.gimbal_point(-30.0, 0.0, True)
+
+
+def test_ardupilot_will_not_turn_a_gimbal_it_has_never_heard_from():
+    """gimbal_rotate_speed replied ok on an aircraft with no mount at all."""
+    link = link_with()
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        ArduPilot(link).gimbal_rate(-15.0, 0.0)
+    assert link.m.sent == []
 
 
 def test_ardupilot_reads_the_gimbal_angle_off_the_link():
@@ -428,6 +507,31 @@ def test_ardupilot_set_home_without_an_altitude_keeps_the_one_home_has():
     link.m._on_send = accepting(link)
     ArduPilot(link).set_home(1.0, 2.0, None)
     assert link.m.sent[-1][13] == 0.0       # zero above home is home's height
+    assert link.m.sent[-1][3] == mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+
+
+def test_both_backends_read_a_home_altitude_as_amsl():
+    """7 m put home 7 m above the old home on one and 7 m above the sea on
+    the other. Home altitude is what RTL descends to."""
+    link = link_with()
+    link.m._on_send = accepting(link)
+    ArduPilot(link).set_home(1.0, 2.0, 7.0)
+    assert link.m.sent[-1][3] == mavutil.mavlink.MAV_FRAME_GLOBAL
+    assert link.m.sent[-1][13] == 7.0
+
+    px4_link = gimbal_link()
+    PX4(px4_link).set_home(1.0, 2.0, 7.0)
+    assert px4_link.m.ints[-1][2] == mavutil.mavlink.MAV_FRAME_GLOBAL
+    assert px4_link.m.ints[-1][-1] == 7.0
+
+
+def test_px4_without_an_altitude_keeps_the_one_home_has():
+    """It sent the aircraft's own height, which moves home every time."""
+    link = gimbal_link()
+    link.m.messages["HOME_POSITION"] = types.SimpleNamespace(altitude=907090)
+    link.m.messages["GLOBAL_POSITION_INT"] = types.SimpleNamespace(alt=921000)
+    PX4(link).set_home(1.0, 2.0, None)
+    assert link.m.ints[-1][-1] == pytest.approx(907.09)
 
 
 def test_ardupilot_set_home_refusal_carries_the_fc_result():
@@ -734,16 +838,22 @@ def test_px4_gimbal_rate_sends_a_rate_and_no_angle():
     assert link.m.attitudes[1][6:8] == (0.0, 0.0)
 
 
-def test_px4_gimbal_rate_asks_for_control_once_when_there_is_no_gimbal(monkeypatch):
-    """A stick refreshes at 10 Hz; a two second timeout on each would stall."""
-    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.2)
+def test_px4_gimbal_rate_never_waits_for_the_claim(monkeypatch):
+    """The tick streams this. Waiting out the claim there stops the flight
+    setpoints, and PX4 drops OFFBOARD a second after they stop."""
+    monkeypatch.setattr(px4, "GIMBAL_ACK_S", 0.3)
     link = gimbal_link({CONFIGURE: None})
     v = PX4(link)
+    t0 = time.time()
     for _ in range(3):
-        with pytest.raises(Refused, match="not supported on this vehicle"):
-            v.gimbal_rate(-10.0, 0.0)
-    assert link.m.commands() == [CONFIGURE]
+        v.gimbal_rate(-10.0, 0.0)       # the claim is out, nothing waits on it
+    assert time.time() - t0 < 0.1
+    assert link.m.commands() == [CONFIGURE]     # and it is asked for once
     assert link.m.attitudes == []
+    time.sleep(0.3)
+    with pytest.raises(Refused, match="not supported on this vehicle"):
+        v.gimbal_rate(-10.0, 0.0)
+    assert link.m.commands() == [CONFIGURE]
 
 
 @pytest.mark.parametrize("q, degrees", [

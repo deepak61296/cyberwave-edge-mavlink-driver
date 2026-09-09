@@ -71,8 +71,9 @@ mqtt:
         unit: deg
       - name: altitude
         default: null
-        unit: m
-      description: Make the given point home
+        unit: m AMSL
+      description: Make the given point home; altitude is above mean sea level, and
+        home keeps its own if it is left out
     - name: reboot
       description: Reboot the flight controller, refused with the motors running
     - name: reboot_aircraft

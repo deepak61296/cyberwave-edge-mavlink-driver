@@ -20,9 +20,12 @@ NOT_SUPPORTED = "not supported on this vehicle"
 MOTORS_RUNNING = "motors running"
 
 # These do not queue: whatever discrete verb is running gives way to them.
+# A cancel that waited for the verb it cancels would hold at the altitude it
+# was sent to stop, so the cancels are here with the holds they are named for.
 # stop is not one of them. The SDK ends every stick burst with a stop, so a
 # verb sent during a burst would be cancelled by the burst's own tail.
-URGENT = ("kill", "brake", "emergency_stop")
+URGENT = ("kill", "brake", "emergency_stop", "hover",
+          "cancel_takeoff", "cancel_landing", "cancel_return_to_home")
 
 # Nothing to land, cancel or hold on a parked aircraft: these are refused
 # "not in air" while it is on the ground with the motors off. With the motors
@@ -98,9 +101,13 @@ CATALOG = {
     "kill": ("Cut the motors now; in the air it takes force",
              (("force", False, None),)),
     "hover": ("Hold position, the flight handle's word for brake", ()),
-    "set_home_location": ("Make the given point home",
+    # altitude is metres above mean sea level, which is the frame the contract
+    # gives every global altitude; left out, home keeps the height it has. It
+    # is what RTL descends to, so both backends say the same thing here.
+    "set_home_location": ("Make the given point home; altitude is above mean "
+                          "sea level, and home keeps its own if it is left out",
                           (("latitude", None, "deg"), ("longitude", None, "deg"),
-                           ("altitude", None, "m"))),
+                           ("altitude", None, "m AMSL"))),
     "reboot_aircraft": ("Reboot the flight controller, the catalog's other "
                         "name for reboot", ()),
     "gimbal_rotate": ("Point the camera, by mode absolute or relative to where "
