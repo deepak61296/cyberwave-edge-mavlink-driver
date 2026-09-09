@@ -1117,7 +1117,8 @@ def test_nothing_pytest_collects_flies_an_aircraft():
     its own pattern, so a name like test_b2_*.py here would take off."""
     here = Path(__file__).resolve().parent
     assert sorted(p.name for p in here.glob("test_*.py")) == [
-        "test_unit_driver.py", "test_unit_link.py", "test_unit_vehicle.py"]
+        "test_unit_driver.py", "test_unit_link.py", "test_unit_sim.py",
+        "test_unit_vehicle.py"]
 
 
 def test_the_committed_catalog_is_the_generated_one():
