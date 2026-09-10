@@ -343,6 +343,37 @@ def test_other_sources_are_dropped(driver, source):
     assert send(driver, {"source_type": source, "command": "arm", "data": {}}) is None
 
 
+@pytest.mark.parametrize("source", ["tele", "edit", "sim_tele", None])
+def test_all_tele_accepts_the_whole_sdk_policy(driver, source):
+    driver.accept_all_tele = True
+    assert send(driver, {"source_type": source, "command": "arm", "data": {}})["ok"]
+
+
+@pytest.mark.parametrize("source", ["edge", "edge_leader", "edge_follower"])
+def test_all_tele_still_never_takes_its_own_state_back(driver, source):
+    """The SDK's edge* guard is not something the switch can turn off."""
+    driver.accept_all_tele = True
+    assert send(driver, {"source_type": source, "command": "arm", "data": {}}) is None
+    assert driver.vehicle.calls == []
+
+
+def test_all_tele_still_drops_a_reply(driver):
+    driver.accept_all_tele = True
+    send(driver, {"status": "ok", "ok": True, "command": "arm", "source_type": "tele"})
+    assert driver.vehicle.calls == []
+
+
+def test_the_wider_policy_is_off_unless_asked_for(driver):
+    assert driver.accept_all_tele is False
+
+
+def test_accept_all_tele_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("CYBERWAVE_ACCEPT_ALL_TELE", "1")
+    twin = types.SimpleNamespace(uuid="twin-uuid",
+                                 client=types.SimpleNamespace(mqtt=FakeMQ()))
+    assert MavlinkDriver(twin=twin).accept_all_tele is True
+
+
 def test_our_own_reply_is_not_re_executed(driver):
     send(driver, {"status": "ok", "ok": True, "command": "arm", "source_type": "tele"})
     assert driver.vehicle.calls == []

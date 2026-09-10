@@ -11,7 +11,9 @@ import os
 import threading
 import time
 
+from cyberwave.constants import SOURCE_TYPE_SIM_TELE, SOURCE_TYPE_TELE
 from cyberwave.driver import (
+    COMMAND_SOURCE_TYPES,
     BaseDriver,
     CallbackGroup,
     CommandArg,
@@ -20,6 +22,7 @@ from cyberwave.driver import (
     ProtocolArgs,
     PublisherArgs,
     TopicSpec,
+    accepts_inbound,
 )
 from cyberwave.manifest.driver_config import (
     JOINT_UPDATE_TOPIC_SLUG,
@@ -60,6 +63,16 @@ class MavlinkDriver(BaseDriver):
         self.telemetry = Telemetry(self.link)
         # Only tele flies the aircraft. sim_tele is opt-in for SITL rigs.
         self.accept_sim_tele = os.environ.get("CYBERWAVE_ACCEPT_SIM_TELE", "0") == "1"
+        # The SDK convention (cyberwave/driver/interface/source_type_policy.py)
+        # is wider than this: a teleop listener also takes edit, and takes an
+        # envelope with no source_type at all. We do not, by default, because
+        # this driver is usually wired to an aircraft that is physically in the
+        # room. edit is the twin editor, so accepting it lets someone dragging a
+        # marker in a browser tab arm and move that aircraft, and an unstamped
+        # envelope has no owner we can name in the log afterwards. Set
+        # CYBERWAVE_ACCEPT_ALL_TELE=1 on a simulator or a desk rig to get the
+        # upstream policy exactly.
+        self.accept_all_tele = os.environ.get("CYBERWAVE_ACCEPT_ALL_TELE", "0") == "1"
         # one thing at a time changes the aircraft's mode: a verb or the sticks
         self._lock = threading.Lock()
         # held for a moment around the two sticks and _running, never across
@@ -173,8 +186,11 @@ class MavlinkDriver(BaseDriver):
         self._pump.start()
         self._streams_at = time.time()
         self.link.request_streams()
-        logger.info("driver up: aircraft=%s accept_sim_tele=%s",
-                    self.link.connection_string, self.accept_sim_tele)
+        logger.info("driver up: aircraft=%s accept_sim_tele=%s accept_all_tele=%s",
+                    self.link.connection_string, self.accept_sim_tele,
+                    self.accept_all_tele)
+        if self.accept_all_tele:
+            logger.warning("accepting edit and unstamped commands: simulator rigs only")
 
     async def on_shutdown(self):
         self.stopping.set()
@@ -302,11 +318,22 @@ class MavlinkDriver(BaseDriver):
     # -- commands --------------------------------------------------------
 
     def _accepts(self, envelope):
-        """tele always; sim_tele only when enabled; replies, ours too, never."""
+        """tele always; sim_tele and the wider policy opt in; replies never.
+
+        accepts_inbound is the SDK's, so its edge* self-echo guard is the same
+        guard every other driver uses. What we narrow is the set we hand it.
+        """
         if "status" in envelope:
             return False
         source = envelope.get("source_type")
-        return source == "tele" or (source == "sim_tele" and self.accept_sim_tele)
+        if self.accept_all_tele:
+            return accepts_inbound(COMMAND_SOURCE_TYPES, source)
+        if source is None:
+            return False        # the SDK is lenient here; on an aircraft we are not
+        allowed = {SOURCE_TYPE_TELE}
+        if self.accept_sim_tele:
+            allowed.add(SOURCE_TYPE_SIM_TELE)
+        return accepts_inbound(frozenset(allowed), source)
 
     async def _on_command(self, envelope):
         if not self._accepts(envelope):
