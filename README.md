@@ -146,8 +146,15 @@ Contract behaviors honored:
   `CYBERWAVE_ACCEPT_SIM_TELE=1` (default **off**, per the contract: "Only
   source_type tele is executed on the aircraft"; export it for SITL rigs).
   `edit`, `edge`, and untagged envelopes are dropped: stricter than the SDK's
-  generic listener policy (which accepts `edit` and untagged), a deliberate
-  choice for a flying vehicle.
+  convention (`cyberwave/driver/interface/source_type_policy.py`, which accepts
+  `tele`, `edit`, `sim_tele` and untagged), a deliberate choice for a flying
+  vehicle. `edit` is the twin editor, and a marker dragged in a browser tab
+  should not arm an aircraft standing in the room. `CYBERWAVE_ACCEPT_ALL_TELE=1`
+  takes the SDK convention exactly, for a simulator or a desk rig; it implies
+  `CYBERWAVE_ACCEPT_SIM_TELE`. Two things it does not relax: `edge`,
+  `edge_leader` and `edge_follower` are the driver's own state coming back and
+  are always dropped (the SDK's own guard, `accepts_inbound`), and so is any
+  envelope carrying a `status` key, which is a reply and not a command.
 - Magnitudes ride in `data.linear_x` / `data.angular_z`, or in the axis the
   catalog names for the verb (`linear_y` for a strafe, `linear_z` for a
   climb); direction comes from the command name. Every verb declares its
@@ -221,6 +228,7 @@ snippet above.
 | `CYBERWAVE_TWIN_UUID` | — | required, the twin to fly |
 | `MAVLINK_CONNECTION` | `tcp:127.0.0.1:5760` | serial path, `udpin:host:port`, or SITL TCP |
 | `CYBERWAVE_ACCEPT_SIM_TELE` | `0` | also execute `sim_tele` commands; SITL and bench rigs only |
+| `CYBERWAVE_ACCEPT_ALL_TELE` | `0` | take the SDK source-type convention whole: `edit` and untagged envelopes too, plus `sim_tele`. Simulator and desk rigs only, never a real aircraft |
 | `CYBERWAVE_REGISTRY_ID` | `holybro/px4vision` | the catalog asset the driver registers as |
 | `CYBERWAVE_PROP_JOINTS` | discovered from the twin | prop joints by hand, comma-separated, in spin order |
 
