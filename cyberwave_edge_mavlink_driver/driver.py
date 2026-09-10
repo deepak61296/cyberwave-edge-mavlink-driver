@@ -11,6 +11,7 @@ import os
 import threading
 import time
 
+from cyberwave.constants import SOURCE_TYPE_SIM_TELE, SOURCE_TYPE_TELE
 from cyberwave.driver import (
     BaseDriver,
     CallbackGroup,
@@ -20,6 +21,7 @@ from cyberwave.driver import (
     ProtocolArgs,
     PublisherArgs,
     TopicSpec,
+    accepts_inbound,
 )
 from cyberwave.manifest.driver_config import (
     JOINT_UPDATE_TOPIC_SLUG,
@@ -298,11 +300,20 @@ class MavlinkDriver(BaseDriver):
     # -- commands --------------------------------------------------------
 
     def _accepts(self, envelope):
-        """tele always; sim_tele only when enabled; replies, ours too, never."""
+        """tele always; sim_tele only when enabled; replies, ours too, never.
+
+        accepts_inbound is the SDK's, so the edge* self-echo guard is the same
+        guard every other driver uses. What we choose is the set we hand it.
+        """
         if "status" in envelope:
             return False
         source = envelope.get("source_type")
-        return source == "tele" or (source == "sim_tele" and self.accept_sim_tele)
+        if source is None:
+            return False        # the SDK is lenient here; on an aircraft we are not
+        allowed = {SOURCE_TYPE_TELE}
+        if self.accept_sim_tele:
+            allowed.add(SOURCE_TYPE_SIM_TELE)
+        return accepts_inbound(frozenset(allowed), source)
 
     async def _on_command(self, envelope):
         if not self._accepts(envelope):
